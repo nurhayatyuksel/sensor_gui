@@ -101,6 +101,8 @@ function TimeBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
+                  domain={["dataMin", "dataMax"]}
+                  type="number"
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -108,9 +110,9 @@ function TimeBasedCharts({
               />
               <Tooltip />
               <Legend verticalAlign="top" />
-              <Line type="monotone" dataKey="p1" stroke="#ff4f7b" dot={false} name="P₁ [bar]" />
-              <Line type="monotone" dataKey="p2" stroke="#2b7de9" dot={false} name="P₂ [bar]" />
-              <Line type="monotone" dataKey="deltaP" stroke="#f59e0b" dot={false} name="ΔP [bar]" />
+              <Line type="monotone" dataKey="p1" stroke="#ff4f7b" dot={false} isAnimationActive={false} name="P₁ [bar]" />
+              <Line type="monotone" dataKey="p2" stroke="#2b7de9" dot={false} isAnimationActive={false} name="P₂ [bar]" />
+              <Line type="monotone" dataKey="deltaP" stroke="#f59e0b" dot={false} isAnimationActive={false} name="ΔP [bar]" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -124,6 +126,8 @@ function TimeBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
+                  domain={["dataMin", "dataMax"]}
+                  type="number"
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -136,6 +140,7 @@ function TimeBasedCharts({
                 dataKey="debi"
                 stroke="#ff5b1f"
                 dot={false}
+                isAnimationActive={false}
                 name="Debi [kg/s]"
               />
             </LineChart>
@@ -151,6 +156,8 @@ function TimeBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
+                domain={["dataMin", "dataMax"]}
+                type="number"
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -163,6 +170,7 @@ function TimeBasedCharts({
                 dataKey="aciklik"
                 stroke="#38c7c7"
                 dot={false}
+                isAnimationActive={false}
                 name="Açıklık [%]"
               />
             </LineChart>
@@ -178,6 +186,8 @@ function TimeBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
+                domain={["dataMin", "dataMax"]}
+                type="number"
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -190,6 +200,7 @@ function TimeBasedCharts({
                 dataKey="akim"
                 stroke="#a855f7"
                 dot={false}
+                isAnimationActive={false}
                 name="Akım [mA]"
               />
             </LineChart>
@@ -219,6 +230,8 @@ function PositionBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="opening"
+                domain={["dataMin", "dataMax"]}
+                type="number"
                 label={{ value: "Açıklık [%]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -226,9 +239,9 @@ function PositionBasedCharts({
               />
               <Tooltip />
               <Legend verticalAlign="top" />
-              <Line type="monotone" dataKey="p1" stroke="#ff4f7b" dot={false} name="P₁ [bar]" />
-              <Line type="monotone" dataKey="p2" stroke="#2b7de9" dot={false} name="P₂ [bar]" />
-              <Line type="monotone" dataKey="deltaP" stroke="#f59e0b" dot={false} name="ΔP [bar]" />
+              <Line type="monotone" dataKey="p1" stroke="#ff4f7b" dot={false} isAnimationActive={false} name="P₁ [bar]" />
+              <Line type="monotone" dataKey="p2" stroke="#2b7de9" dot={false} isAnimationActive={false} name="P₂ [bar]" />
+              <Line type="monotone" dataKey="deltaP" stroke="#f59e0b" dot={false} isAnimationActive={false} name="ΔP [bar]" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -242,6 +255,8 @@ function PositionBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="opening"
+                domain={["dataMin", "dataMax"]}
+                type="number"
                 label={{ value: "Açıklık [%]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -249,7 +264,7 @@ function PositionBasedCharts({
               />
               <Tooltip />
               <Legend verticalAlign="top" />
-              <Line type="monotone" dataKey="debi" stroke="#16a34a" dot={false} name="Debi [kg/s]" />
+              <Line type="monotone" dataKey="debi" stroke="#16a34a" dot={false} isAnimationActive={false} name="Debi [kg/s]" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -263,6 +278,8 @@ function PositionBasedCharts({
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="opening"
+                domain={["dataMin", "dataMax"]}
+                type="number"
                 label={{ value: "Açıklık [%]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
@@ -270,7 +287,7 @@ function PositionBasedCharts({
               />
               <Tooltip />
               <Legend verticalAlign="top" />
-              <Line type="monotone" dataKey="cv" stroke="#7c3aed" dot={false} name="Cᵥ" />
+              <Line type="monotone" dataKey="cv" stroke="#7c3aed" dot={false} isAnimationActive={false} name="Cᵥ" />
             </LineChart>
           </ResponsiveContainer>
         </div>

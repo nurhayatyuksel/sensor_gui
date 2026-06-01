@@ -17,10 +17,13 @@ input {
 .app-shell {
   display: grid;
   grid-template-columns: 185px minmax(0, 1fr) 270px;
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
   gap: 8px;
   padding: 8px;
   align-items: start;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 
@@ -29,6 +32,8 @@ input {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
+  max-height: 100%;
 }
 
 .sensor-card {
@@ -166,7 +171,9 @@ input {
 /* CENTER */
 .main-content {
   min-width: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: 100%;
   position: relative;
 }
 
@@ -378,6 +385,9 @@ input {
 /* Chart content area — charts themselves are non-interactive */
 .charts-content {
   pointer-events: none;
+  min-width: 0;     /* ← EKLE */
+  min-height: 0;    /* ← EKLE */
+  overflow: hidden; /* ← EKLE */
 }
 
 .charts-grid {
