@@ -61,8 +61,8 @@ type Props = {
 
 const DEFAULT_SETTINGS: AppSettings = {
   hardware: {
-    port:            "COM3",
-    baud_rate:       115200,
+    port:            "COM8",
+    baud_rate:       230400,
     slave_id:        1,
     modbus_timeout:  0.1,
     sample_rate_hz:  50,
@@ -106,31 +106,25 @@ async function loadSettingsFromDisk(): Promise<AppSettings> {
 }
 
 
-async function saveSettingsToDisk(settings: AppSettings): Promise<boolean> {
+async function saveSettingsToDisk(settings: AppSettings): Promise<{ ok: boolean; error?: string }> {
   if (window.electronAPI) {
     const result = await window.electronAPI.saveSettings(settings);
-    return result.ok;
+    return { ok: result.ok, error: result.error };
   }
-
-  // Tarayıcı modu: backend'e POST /settings
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-
     const res = await fetch("http://localhost:8000/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hardware: settings.hardware }),
+      body: JSON.stringify({ hardware: { ...settings.hardware, ...settings.valve } }),
       signal: controller.signal,
     });
-
     clearTimeout(timeoutId);
     const data = await res.json();
-    return data.ok === true;
-
+    return { ok: data.ok === true, error: data.error ?? data.detail };
   } catch (err) {
-    console.error("[SettingsModal] POST /settings hatası:", err);
-    return false;
+    return { ok: false, error: String(err) };
   }
 }
 
@@ -144,18 +138,39 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
   const [saving,      setSaving]      = useState(false);
   const [saveError,   setSaveError]   = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [activeTab,   setActiveTab]   = useState<"hardware" | "valve">("hardware");
+  const [activeTab, setActiveTab] = useState<"connection" | "motor" | "valve">("connection");
 
-  // Modal açılınca mevcut ayarları yükle
+
   useEffect(() => {
     if (!isOpen) return;
-    loadSettingsFromDisk().then(setSettings);
-
-    // Electron ortamında mevcut COM portlarını listele
     if (window.electronAPI) {
-      window.electronAPI.getComPorts().then(setComPorts);
+      // Electron: loadSettings() tam AppSettings döndürür
+      window.electronAPI.loadSettings().then(saved => {
+        if (saved) setSettings(saved);
+      });
+    } else {
+      // Browser/dev: backend'den hardware oku, valve default'ta kalır
+      fetch("http://localhost:8000/settings")
+        .then(r => r.json())
+        .then(data => {
+          if (data.ok && data.hardware) {
+            // spread ile birleştir — yaml'da eksik alan varsa default'a düşer
+            setSettings(prev => ({
+              ...prev,
+              hardware: { ...prev.hardware, ...data.hardware },
+              valve: {
+                orifice_diameter_mm: data.hardware.orifice_diameter_mm ?? prev.valve.orifice_diameter_mm,
+                thread_pitch_mm:     data.hardware.thread_pitch_mm     ?? prev.valve.thread_pitch_mm,
+                max_stroke_mm:       data.hardware.max_stroke_mm       ?? prev.valve.max_stroke_mm,
+                cd:                  data.hardware.cd                  ?? prev.valve.cd,
+              },
+            }));
+          }
+        })
+        .catch(() => {}); // sessiz fail — default'lar kalır
     }
   }, [isOpen]);
+
 
   if (!isOpen) return null;
 
@@ -182,9 +197,10 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
     setSaveError(null);
     setSaveSuccess(false);
 
-    const ok = await saveSettingsToDisk(settings);
+    const result = await saveSettingsToDisk(settings);
 
-    if (ok) {
+
+    if (result.ok) {
       setSaveSuccess(true);
       onSaved(settings);
 
@@ -198,8 +214,9 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
         onClose();
       }, 1200);
     } else {
-      setSaveError("Ayarlar kaydedilemedi. Dosya izinlerini kontrol edin.");
-    }
+      setSaveError(result.error
+        ? `Ayarlar kaydedilemedi: ${result.error}`
+        : "Ayarlar kaydedilemedi. Dosya izinlerini kontrol edin.");}
 
     setSaving(false);
   }
@@ -219,23 +236,26 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
         </div>
 
         {/* Sekmeler */}
+
         <div style={s.tabs}>
-          {(["hardware", "valve"] as const).map(tab => (
+          {(["connection", "motor", "valve"] as const).map(tab => (
             <button
               key={tab}
               style={{ ...s.tab, ...(activeTab === tab ? s.tabActive : {}) }}
               onClick={() => setActiveTab(tab)}
             >
-              {tab === "hardware" ? "🔌 Donanım & Port" : "🔧 Vana Profili"}
+              {tab === "connection" ? "🔌 Bağlantı" : tab === "motor" ? "⚙️ Motor" : "🔧 Vana Profili"}
             </button>
           ))}
+
         </div>
 
         {/* İçerik */}
         <div style={s.body}>
 
           {/* ---- DONANIM SEKMESİ ---- */}
-          {activeTab === "hardware" && (
+
+          {activeTab === "connection" && (
             <div style={s.section}>
 
               {/* Simülatör Modu */}
@@ -256,7 +276,6 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
 
               <div style={s.divider} />
 
-              {/* COM Port */}
               <SettingRow label="COM Port" note="Cihaz Yöneticisi'nden kontrol et">
                 {comPorts.length > 0 ? (
                   <select
@@ -265,9 +284,7 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
                     onChange={e => setHw("port", e.target.value)}
                     disabled={settings.sim_mode}
                   >
-                    {comPorts.map(p => (
-                      <option key={p} value={p}>{p}</option>
-                    ))}
+                    {comPorts.map(p => <option key={p} value={p}>{p}</option>)}
                   </select>
                 ) : (
                   <input
@@ -275,72 +292,80 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
                     type="text"
                     value={settings.hardware.port}
                     onChange={e => setHw("port", e.target.value)}
-                    placeholder="COM3"
+                    placeholder="COM8"
                     disabled={settings.sim_mode}
                   />
                 )}
               </SettingRow>
 
-              {/* Baud Rate */}
-              <SettingRow label="Baud Rate" note="Cihaz dokümanına göre (genelde 115200)">
+              <SettingRow label="Baud Rate" note="Cihaz dokümanına göre">
                 <select
                   style={s.input}
                   value={settings.hardware.baud_rate}
                   onChange={e => setHw("baud_rate", Number(e.target.value))}
                   disabled={settings.sim_mode}
                 >
-                  {[9600, 19200, 38400, 57600, 115200].map(b => (
+                  {[9600, 19200, 38400, 57600, 115200, 230400].map(b => (
                     <option key={b} value={b}>{b}</option>
                   ))}
                 </select>
               </SettingRow>
 
-              {/* Slave ID */}
               <SettingRow label="Slave ID" note="Cihaz DIP switch ayarı (1–247)">
                 <input
                   style={{ ...s.input, width: 80 }}
-                  type="number"
-                  min={1} max={247}
+                  type="number" min={1} max={247}
                   value={settings.hardware.slave_id}
                   onChange={e => setHw("slave_id", Number(e.target.value))}
                   disabled={settings.sim_mode}
                 />
               </SettingRow>
 
+              <SettingRow label="Modbus Timeout (s)" note="Yanıt bekleme süresi">
+                <input
+                  style={{ ...s.input, width: 80 }}
+                  type="number" step={0.05} min={0.05} max={2.0}
+                  value={settings.hardware.modbus_timeout}
+                  onChange={e => setHw("modbus_timeout", Number(e.target.value))}
+                  disabled={settings.sim_mode}
+                />
+              </SettingRow>
+
               <div style={s.divider} />
 
-              {/* Polling Hızı */}
               <SettingRow label="Polling Hızı (Hz)" note="Saniyede kaç kez okunacak (20–100)">
                 <input
                   style={{ ...s.input, width: 80 }}
-                  type="number"
-                  min={20} max={100}
+                  type="number" min={20} max={100}
                   value={settings.hardware.sample_rate_hz}
                   onChange={e => setHw("sample_rate_hz", Number(e.target.value))}
                 />
               </SettingRow>
 
-              {/* Adım Çözünürlüğü */}
+            </div>
+          )}
+
+          {activeTab === "motor" && (
+            <div style={s.section}>
+
               <SettingRow label="Adım Çözünürlüğü (PPR)" note="1 tur = kaç adım (enkoder ayarı)">
                 <input
                   style={{ ...s.input, width: 100 }}
-                  type="number"
-                  min={1}
+                  type="number" min={1}
                   value={settings.hardware.step_resolution}
                   onChange={e => setHw("step_resolution", Number(e.target.value))}
                 />
               </SettingRow>
 
-              {/* Maks. Tur */}
-              <SettingRow label="Maks. Tur Sayısı" note="Vananın tam açılması için gereken tur">
+              <SettingRow label="Maks. Tur Sayısı" note="Vananın tam açılması için gereken tur (1–40)">
                 <input
                   style={{ ...s.input, width: 80 }}
-                  type="number"
-                  min={1} max={40}
+                  type="number" min={1} max={40}
                   value={settings.hardware.max_revolutions}
                   onChange={e => setHw("max_revolutions", Number(e.target.value))}
                 />
               </SettingRow>
+
             </div>
           )}
 

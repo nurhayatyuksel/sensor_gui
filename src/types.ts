@@ -97,6 +97,20 @@ export type SensorPayload = {
   motor_current_ma: number;  // Dış sinyal / motor akımı (mA)
   calibration_status: number; // addr=11 — 0: kalibre değil, 1: kalibre
   timestamp:        number;  // Backend sistem zamanı (monotonic)
+  // --- Cihaz register geri-okuması (FC03 0-20 bloğu — A adımı) ---
+  mode_select?:        number;  // addr 0
+  total_turns?:        number;  // addr 1
+  signal_lost_flag?:   number;  // addr 6
+  signal_loss_action?: number;  // addr 7
+  seating_load?:       number;  // addr 12
+  backoff_offset?:     number;  // addr 13
+  pid_setpoint?:       number;  // addr 14 — bar
+  pid_kp?:             number;  // addr 15
+  pid_ki?:             number;  // addr 16
+  pid_kd?:             number;  // addr 17
+  pid_deadband?:       number;  // addr 18 — bar
+  adc_offset?:         number;  // addr 19 — bar
+  adc_gain?:           number;  // addr 20 — çarpan
  
 };
  

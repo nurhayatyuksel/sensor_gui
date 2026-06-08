@@ -7,7 +7,7 @@
 //   - Bağlantı durum göstergesi (ConnectionStatus) eklendi.
 //   - Grafik sıfırlama artık gerçekten sensorHistory'yi temizliyor.
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import "./App.css";
 
 import { SensorCard }        from "./components/SensorCard";
@@ -17,17 +17,16 @@ import { ParameterSection }  from "./components/ParameterPanel";
 import { FluidSelector }     from "./components/FluidSelector";
 import { SettingsModal }     from "./components/SettingsModal";
 import { MotorControlModal } from "./components/MotorControlModal";
+import { sensorCards } from "./data/sensorConfig";
+import { useWebSocket }      from "./hooks/useWebSocket.ts";
+import type { ValveSettings } from "./components/SettingsModal";
+import type { FluidOption, SensorPayload } from "./types";
 
 import {
   fluidOptions,
-  geometryParameters,
   limitParameters,
   pidParameters,
 } from "./data/mockData";
-import { sensorCards } from "./data/sensorConfig";
-
-import { useWebSocket }      from "./hooks/useWebSocket.ts";
-import type { FluidOption, SensorPayload } from "./types";
 
 // ----------------------------------------------------------------
 // Sabitler
@@ -44,9 +43,16 @@ const modeToCardId: Record<Mode, string | null> = {
 
 const emptyFormValues: Record<string, string> = {
   kp: "", ki: "", kd: "", sampleTime: "", filterFc: "",
-  pitch: "", orifice: "", coneAngle: "", cd: "",
+  setpoint: "", deadband: "",
   maxP1: "", maxDeltaP: "", maxOpen: "", estop: "",
 };
+
+// Form string → sayı. Boş/geçersizse null döner (o komut GÖNDERİLMEZ).
+function parseNum(s: string | undefined): number | null {
+  if (s === undefined || s.trim() === "") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
 
 // step_resolution: hardware.yaml ile eşleşmeli (varsayılan 1000)
 const STEP_RESOLUTION = 1000;
@@ -61,11 +67,19 @@ function payloadToCardValues(
 ): Record<string, string> {
   if (!payload) return {};
 
-  const posRev  = Math.floor(payload.motor_pos_ticks / stepResolution);
-  const posStep = payload.motor_pos_ticks % stepResolution;
+  //const posRev  = Math.floor(payload.motor_pos_ticks / stepResolution);
+  //const posStep = payload.motor_pos_ticks % stepResolution;
   // Açıklık % = (tur * adım_çözünürlüğü + adım) / max_tick × 100
   // max_tick bilgisi backend'den gelmeli; şimdilik pozisyon tick olarak gösteriyoruz.
-  const openingPct = posRev + posStep / stepResolution; // tur cinsinden
+  //const openingPct = posRev + posStep / stepResolution; // tur cinsinden
+
+  // Açıklık % = motor_pos_ticks / (total_turns × step_resolution) × 100
+  // total_turns (addr 1): firmware kalibrasyonda bu değeri set eder.
+  // Kalibrasyon yapılmamışsa (total_turns = 0 / undefined) → 0 göster.
+  const maxTicks   = (payload.total_turns ?? 0) * stepResolution;
+  const openingPct = maxTicks > 0
+    ? (payload.motor_pos_ticks / maxTicks) * 100
+    : 0;
 
   return {
     // Basınç sensörü şu an register haritasında yok → 0.0
@@ -103,6 +117,28 @@ function App() {
  
   const [settingsOpen,   setSettingsOpen]   = useState(false);
   const [showMotorControl, setShowMotorControl] = useState(false);
+  const [valveSettings, setValveSettings] = useState<ValveSettings>({
+  orifice_diameter_mm: 10.0,
+  thread_pitch_mm:     1.5,
+  max_stroke_mm:       15.0,
+  cd:                  0.65,
+});
+
+useEffect(() => {
+  fetch("http://localhost:8000/settings")
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok && data.hardware) {
+        setValveSettings(prev => ({
+          orifice_diameter_mm: data.hardware.orifice_diameter_mm ?? prev.orifice_diameter_mm,
+          thread_pitch_mm:     data.hardware.thread_pitch_mm     ?? prev.thread_pitch_mm,
+          max_stroke_mm:       data.hardware.max_stroke_mm       ?? prev.max_stroke_mm,
+          cd:                  data.hardware.cd                  ?? prev.cd,
+        }));
+      }
+    })
+    .catch(() => {});
+}, []);
   const [modeValues, setModeValues] = useState<Record<Mode, Record<string, string>>>({
     "Basınç":    { ...emptyFormValues },
     "Pozisyon":  { ...emptyFormValues },
@@ -154,7 +190,10 @@ function App() {
     const t0 = sensorHistory[0]?.timestamp ?? 0;
     return sensorHistory.map((p) => ({
       time:    p.timestamp - t0,
-      aciklik: Math.floor(p.motor_pos_ticks / STEP_RESOLUTION),
+      //aciklik: Math.floor(p.motor_pos_ticks / STEP_RESOLUTION),
+      aciklik: (p.total_turns ?? 0) > 0
+        ? (p.motor_pos_ticks / ((p.total_turns ?? 0) * STEP_RESOLUTION)) * 100
+        : 0
     }));
   }, [sensorHistory]);
 
@@ -192,8 +231,32 @@ function App() {
       console.info("Grafikler sıfırlandı.");
     }, [clearHistory]);
 
+  // PID parametrelerini cihaza gönder. Boş alanlar atlanır (kazara 0 yazılmaz).
+  // Kazançlar atomik (FC16) olduğu için Kp/Ki/Kd ÜÇÜ birden dolu olmalı.
+  const handleApplyPid = useCallback(() => {
+    const f = modeValues[activeMode];
+    const sp = parseNum(f.setpoint);
+    const db = parseNum(f.deadband);
+    const kp = parseNum(f.kp), ki = parseNum(f.ki), kd = parseNum(f.kd);
+
+    if (sp !== null) sendMessage({ type: "SET_PID_SETPOINT", payload: { setpoint: sp } });
+    if (db !== null) sendMessage({ type: "SET_PID_DEADBAND", payload: { deadband: db } });
+    if (kp !== null && ki !== null && kd !== null) {
+      sendMessage({ type: "SET_PID_GAINS", payload: { kp, ki, kd } });
+    } else if (kp !== null || ki !== null || kd !== null) {
+      console.warn("Kp, Ki, Kd üçü birden dolu olmalı — kazançlar gönderilmedi.");
+    }
+    console.info("PID parametreleri gönderildi.");
+  }, [modeValues, activeMode, sendMessage]);
+
+  // Sensör (ADC) kalibrasyonunu cihaza gönder.
+
   const currentFormValues     = modeValues[activeMode];
   const currentUserSensorValues = modeSensorValues[activeMode];
+
+  
+
+
 
   // ---------- Render ----------
   const bannerCount =
@@ -205,12 +268,13 @@ function App() {
 
     <>
         {showMotorControl && (
-      <MotorControlModal
-        onClose={() => setShowMotorControl(false)}
-        sendMessage={sendMessage}
-        connectionStatus={connectionStatus}
-        latestPacket={sensorData}
-      />
+        <MotorControlModal
+          onClose={() => setShowMotorControl(false)}
+          sendMessage={sendMessage}
+          connectionStatus={connectionStatus}
+          latestPacket={sensorData}
+          valveSettings={valveSettings}
+        />
     )}
     
     <div className="app-shell" style={{ paddingTop: 8 + bannerOffset }}>
@@ -343,7 +407,10 @@ function App() {
       <SettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        onSaved={(s) => console.log("Ayarlar güncellendi", s)}
+       onSaved={(s) => {
+          setValveSettings(s.valve);
+          console.log("Ayarlar güncellendi", s);
+        }}
       />
 
       {/* Sağ: Parametre Paneli */}
@@ -373,12 +440,52 @@ function App() {
           values={currentFormValues}
           onChange={handleInputChange}
         />
-        <ParameterSection
-          title="Geometri & Kalibrasyon"
-          items={geometryParameters}
-          values={currentFormValues}
-          onChange={handleInputChange}
-        />
+        {sensorData && (
+          <div className="param-readback">
+            <small>
+              Cihazda → SP: {sensorData.pid_setpoint?.toFixed(2) ?? "—"} bar &nbsp;|&nbsp;
+              Kp: {sensorData.pid_kp?.toFixed(2) ?? "—"} &nbsp;
+              Ki: {sensorData.pid_ki?.toFixed(2) ?? "—"} &nbsp;
+              Kd: {sensorData.pid_kd?.toFixed(2) ?? "—"} &nbsp;|&nbsp;
+              ÖB: {sensorData.pid_deadband?.toFixed(2) ?? "—"} bar
+            </small>
+          </div>
+        )}
+        <button
+          type="button"
+          className="apply-btn"
+          onClick={handleApplyPid}
+          disabled={connectionStatus !== "connected"}
+        >
+          PID Uygula
+        </button>
+          <div className="param-readback">
+            <small style={{ fontWeight: 600 }}>Sensör Kalibrasyon (Motor Kontrol'den ayarla)</small><br />
+            <small>
+              Cihazda → Ofset: {sensorData?.adc_offset?.toFixed(3) ?? "—"} bar &nbsp;|&nbsp;
+              Gain: {sensorData?.adc_gain?.toFixed(3) ?? "—"}
+            </small>
+          </div>
+
+          <div className="param-readback">
+            <small style={{ fontWeight: 600 }}>Geometri (Ayarlar → Vana Profili'nden düzenle)</small><br />
+            <small>
+              Pitch: {valveSettings.thread_pitch_mm} mm &nbsp;|&nbsp;
+              Strok: {valveSettings.max_stroke_mm} mm &nbsp;|&nbsp;
+              Orifis: {valveSettings.orifice_diameter_mm} mm &nbsp;|&nbsp;
+              Cd: {valveSettings.cd}
+            </small>
+          </div>
+          <div className="param-readback">
+            <small style={{ fontWeight: 600 }}>Kalibrasyon Durumu (Motor Kontrol'den başlat)</small><br />
+            <small>
+              {sensorData
+                ? `${sensorData.calibration_status === 1 ? "KALİBRE ✓" : "Kalibre değil"} · Pozisyon: ${sensorData.motor_pos_ticks ?? "—"} · Yük: ${sensorData.motor_current_ma?.toFixed(0) ?? "—"} mA · total_turns: ${sensorData.total_turns ?? "—"}`
+                : "Veri bekleniyor..."}
+            </small>
+          </div>
+
+
         <ParameterSection
           title="Limitler"
           items={limitParameters}

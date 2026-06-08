@@ -153,15 +153,16 @@ export function CommandPanel({ sendMessage, connectionStatus }: Props) {
           {/* Kalibrasyon */}
           <button
             type="button"
-            disabled={disabled}
+            disabled
+            title="Kalibrasyon artık parametre panelindeki 'Kalibrasyonu Başlat' ile yapılır."
             style={{
               ...styles.quickBtn,
               ...styles.btnCal,
-              ...(disabled ? styles.btnDisabled : {}),
+              ...styles.btnDisabled,
             }}
             onClick={handleCalibrate}
           >
-            🔧 Kalibrasyon Başlat
+            🔧 Kalibrasyon (panelde)
           </button>
 
           {/* Tam Aç */}

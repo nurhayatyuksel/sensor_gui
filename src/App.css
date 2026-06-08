@@ -16,11 +16,11 @@ input {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 185px minmax(0, 1fr) 270px;
+  grid-template-columns: 185px minmax(0, 1fr) 340px;
   height: 100vh;
-  max-height: 100vh;
-  gap: 8px;
-  padding: 8px;
+  max-height: 150vh;
+  gap: 5px;
+  padding: 5px;
   align-items: start;
   overflow: hidden;
   box-sizing: border-box;
@@ -432,9 +432,10 @@ input {
 .right-sidebar {
   background: #ffffff;
   border: 1px solid #007f78;
-  border-radius: 12px;
+  border-radius: 20px;
   padding: 12px 10px;
   overflow-y: auto;
+  max-height: 100%;  
   position: relative;
   z-index: 10;
   isolation: isolate;

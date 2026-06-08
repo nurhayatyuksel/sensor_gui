@@ -6,12 +6,15 @@ import type {
 } from "../types";
 
 export const pidParameters: ParameterItem[] = [
+  { label: "Setpoint (bar)", key: "setpoint" },   // ← YENİ
   { label: "Kp", key: "kp" },
   { label: "Ki", key: "ki" },
   { label: "Kd", key: "kd" },
+  { label: "Ölü Bant (bar)", key: "deadband" },   // ← YENİ
   { label: "Sample Time (ms)", key: "sampleTime" },
   { label: "Filtre fc (Hz)", key: "filterFc" },
 ];
+
 
 export const geometryParameters: ParameterItem[] = [
   { label: "Pitch (mm)", key: "pitch" },
@@ -117,4 +120,17 @@ export const currentTimeData: CurrentTimePoint[] = [
   { time: 8, akim: 475 },
   { time: 9, akim: 475 },
   { time: 10, akim: 475 },
+];
+
+
+export const sensorCalibParameters: ParameterItem[] = [
+  { label: "Sensör Ofset (bar)", key: "adcOffset" },
+  { label: "Sensör Gain (×)",    key: "adcGain" },
+];
+
+export const calibrationParameters: ParameterItem[] = [
+  { label: "Maks. Strok (mm)",     key: "maxStroke" },
+  { label: "Yön (0=CW, 1=CCW)",    key: "calibDir" },
+  { label: "Seating Eşiği (mA)",   key: "seatingLoad" },
+  { label: "Backoff",              key: "backoffOffset" },
 ];
