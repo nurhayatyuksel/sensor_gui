@@ -7,7 +7,7 @@
 //   - Bağlantı durum göstergesi (ConnectionStatus) eklendi.
 //   - Grafik sıfırlama artık gerçekten sensorHistory'yi temizliyor.
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import "./App.css";
 
 import { SensorCard }        from "./components/SensorCard";
@@ -55,8 +55,7 @@ function parseNum(s: string | undefined): number | null {
 }
 
 // step_resolution: hardware.yaml ile eşleşmeli (varsayılan 1000)
-const STEP_RESOLUTION = 1000;
-
+//const [stepResolution, setStepResolution] = useState<number>(1000);
 // ----------------------------------------------------------------
 // SensorPayload → Sensör kartı değerlerine dönüştürme
 // ----------------------------------------------------------------
@@ -80,7 +79,7 @@ function payloadToCardValues(
   const openingPct = maxTicks > 0
     ? (payload.motor_pos_ticks / maxTicks) * 100
     : 0;
-
+  
   return {
     // Basınç sensörü şu an register haritasında yok → 0.0
     giris:    payload.p1_raw.toFixed(2),
@@ -91,6 +90,7 @@ function payloadToCardValues(
     // Pozisyon: tur.adım formatında
     pozisyon: openingPct.toFixed(2),
   };
+  
 }
 
 // ----------------------------------------------------------------
@@ -117,6 +117,9 @@ function App() {
  
   const [settingsOpen,   setSettingsOpen]   = useState(false);
   const [showMotorControl, setShowMotorControl] = useState(false);
+  const [decimalPlaces, setDecimalPlaces] = useState(3);
+  const t0Ref = useRef<number>(0);
+  const [stepResolution, setStepResolution] = useState<number>(1000);
   const [valveSettings, setValveSettings] = useState<ValveSettings>({
   orifice_diameter_mm: 10.0,
   thread_pitch_mm:     1.5,
@@ -135,6 +138,7 @@ useEffect(() => {
           max_stroke_mm:       data.hardware.max_stroke_mm       ?? prev.max_stroke_mm,
           cd:                  data.hardware.cd                  ?? prev.cd,
         }));
+setStepResolution(data.hardware.step_resolution ?? 1000);
       }
     })
     .catch(() => {});
@@ -161,48 +165,63 @@ useEffect(() => {
 
   // Backend'den gelen anlık sensör değerleri (salt okunur kartlar için)
   const liveSensorValues = useMemo(
-    () => payloadToCardValues(sensorData, STEP_RESOLUTION),
-    [sensorData]
+    () => payloadToCardValues(sensorData, stepResolution),
+    [sensorData, stepResolution]
   );
 
   // Grafik için SensorPayload geçmişini mevcut tiplere dönüştür.
   // Backend timestamp'ı (monotonic saniye) kullanılır; t0'dan itibaren geçen süre [s].
   const flowData = useMemo(() => {
-    const t0 = sensorHistory[0]?.timestamp ?? 0;
+    if (sensorHistory.length === 0) return [];
+    if (t0Ref.current === 0 || sensorHistory[0].timestamp < t0Ref.current) {
+    t0Ref.current = sensorHistory[0].timestamp;
+}
+
     return sensorHistory.map((p) => ({
-      time:    p.timestamp - t0,
+      time:    p.timestamp - t0Ref.current,
       debi:    p.motor_current_ma,
-      aciklik: Math.floor(p.motor_pos_ticks / STEP_RESOLUTION),
-    }));
-  }, [sensorHistory]);
+      aciklik: Math.floor(p.motor_pos_ticks / stepResolution),
+  }));
+  }, [sensorHistory, stepResolution]);
 
   const pressureData = useMemo(() => {
-    const t0 = sensorHistory[0]?.timestamp ?? 0;
+    if (sensorHistory.length === 0) return [];
+    if (t0Ref.current === 0 || sensorHistory[0].timestamp < t0Ref.current) {
+    t0Ref.current = sensorHistory[0].timestamp;
+}
+
     return sensorHistory.map((p) => ({
-      time:   p.timestamp - t0,
+      time:   p.timestamp - t0Ref.current,
       p1:     p.p1_raw,
       p2:     p.p2_raw,
       deltaP: p.p1_raw - p.p2_raw,
-    }));
+  }));
   }, [sensorHistory]);
 
   const openingTimeData = useMemo(() => {
-    const t0 = sensorHistory[0]?.timestamp ?? 0;
+    if (sensorHistory.length === 0) return [];
+    if (t0Ref.current === 0 || sensorHistory[0].timestamp < t0Ref.current) {
+    t0Ref.current = sensorHistory[0].timestamp;
+}
+
     return sensorHistory.map((p) => ({
-      time:    p.timestamp - t0,
-      //aciklik: Math.floor(p.motor_pos_ticks / STEP_RESOLUTION),
+      time:    p.timestamp - t0Ref.current,
       aciklik: (p.total_turns ?? 0) > 0
-        ? (p.motor_pos_ticks / ((p.total_turns ?? 0) * STEP_RESOLUTION)) * 100
-        : 0
-    }));
-  }, [sensorHistory]);
+        ? (p.motor_pos_ticks / ((p.total_turns ?? 0) * stepResolution)) * 100
+        : 0,
+  }));
+  }, [sensorHistory, stepResolution]);
 
   const currentTimeData = useMemo(() => {
-    const t0 = sensorHistory[0]?.timestamp ?? 0;
+    if (sensorHistory.length === 0) return [];
+    if (t0Ref.current === 0 || sensorHistory[0].timestamp < t0Ref.current) {
+    t0Ref.current = sensorHistory[0].timestamp;
+}
+
     return sensorHistory.map((p) => ({
-      time: p.timestamp - t0,
+      time: p.timestamp - t0Ref.current,
       akim: p.motor_current_ma,
-    }));
+      }));
   }, [sensorHistory]);
 
   // Açıklık-basınç ve açıklık-debi grafikleri için (şimdilik boş — basınç yok)
@@ -224,9 +243,24 @@ useEffect(() => {
       ...prev,
       [activeMode]: { ...prev[activeMode], [id]: value },
     }));
+    const editableId = modeToCardId[activeMode];
+  if (id === editableId) {
+    setModeValues((prev) => ({
+      ...prev,
+      [activeMode]: { ...prev[activeMode], setpoint: value },
+    }));
+  }
   }, [activeMode]);
 
+  const handleConnect = useCallback(() => {
+      t0Ref.current = 0;
+      clearHistory();
+      connect();
+      console.info("Grafikler sıfırlandı.");
+    }, [connect, clearHistory]);
+
   const handleReset = useCallback(() => {
+      t0Ref.current = 0;
       clearHistory();
       console.info("Grafikler sıfırlandı.");
     }, [clearHistory]);
@@ -400,6 +434,7 @@ useEffect(() => {
           openingPressureData={openingPressureData}
           openingFlowData={openingFlowData}
           cvData={cvData}
+          decimalPlaces={decimalPlaces}
           onReset={handleReset}
         />
       </main>
@@ -409,6 +444,8 @@ useEffect(() => {
         onClose={() => setSettingsOpen(false)}
        onSaved={(s) => {
           setValveSettings(s.valve);
+          setDecimalPlaces(s.decimal_places ?? 3);
+          setStepResolution(s.hardware.step_resolution ?? 1000);
           console.log("Ayarlar güncellendi", s);
         }}
       />
@@ -417,7 +454,7 @@ useEffect(() => {
       <aside className="right-sidebar">
         <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
           <button
-            onClick={connect}
+            onClick={handleConnect}
             disabled={connectionStatus === "connecting" || connectionStatus === "connected"}
             style={{ flex: 1 }}
           >

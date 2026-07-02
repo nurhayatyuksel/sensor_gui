@@ -48,6 +48,7 @@ import type { ConnectionStatus } from "../hooks/useWebSocket";
 import type { SensorPayload } from "../types";
 import type { ValveSettings } from "./SettingsModal";
 
+
 // ----------------------------------------------------------------
 // Tipler
 // ----------------------------------------------------------------
@@ -93,6 +94,29 @@ export function MotorControlModal({
 }: Props) {
   const connected = connectionStatus === "connected";
   const disabled  = !connected;
+
+
+  // Drag state — modal'ın ekrandaki konumu
+  const [pos, setPos] = useState({ x: window.innerWidth - 520, y: 60 });
+  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    dragRef.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      setPos({
+        x: dragRef.current.origX + ev.clientX - dragRef.current.startX,
+        y: dragRef.current.origY + ev.clientY - dragRef.current.startY,
+      });
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [pos]);
 
   // -- State --
   const [activeMode,       setActiveMode]      = useState<ServoModeId>(3);
@@ -155,12 +179,18 @@ export function MotorControlModal({
     sendMessage({ type: "CLOSE_FULL", payload: {} });
   }, [sendMessage]);
 
+
+  const lastGotoRef = useRef<number>(0);
   const handleSendTarget = useCallback(() => {
-    sendMessage({
-      type:    "GOTO_POSITION",
-      payload: { turns: targetTurns, step: targetStep },
-    });
-  }, [sendMessage, targetTurns, targetStep]);
+  const now = Date.now();
+  if (now - lastGotoRef.current < 1000) return;  // 300ms debounce
+  lastGotoRef.current = now;
+  sendMessage({ 
+    type: "GOTO_POSITION", 
+    payload: { turns: targetTurns, step: targetStep } 
+  });
+}, [sendMessage, targetTurns, targetStep]);
+ 
 
   const handleStop = useCallback(() => {
     sendMessage({ type: "STOP", payload: {} });
@@ -247,11 +277,11 @@ export function MotorControlModal({
   // ----------------------------------------------------------------
 
   return (
-    <div style={s.overlay} onClick={onClose}>
-      <div style={s.modal} onClick={e => e.stopPropagation()}>
+    <div style={{ ...s.modal, position: "fixed", left: pos.x, top: pos.y, zIndex: 1000 }}>
+      
 
         {/* ── BAŞLIK ── */}
-        <div style={s.header}>
+        <div style={{ ...s.header, cursor: "grab", userSelect: "none" }} onMouseDown={onMouseDown}>
           <div style={s.headerLeft}>
             <div style={s.headerIcon}>⚙</div>
             <div>
@@ -263,7 +293,12 @@ export function MotorControlModal({
               </div>
             </div>
           </div>
-          <button style={s.closeBtn} onClick={onClose}>✕</button>
+          <button style={s.closeBtn}  
+          onMouseDown={e => e.stopPropagation()} 
+          onClick={onClose}
+          >
+            ✕
+            </button>
         </div>
 
         {/* ── ANA GÖVDE ── */}
@@ -590,7 +625,7 @@ export function MotorControlModal({
           </div>{/* /rightCol */}
 
         </div>{/* /body */}
-      </div>{/* /modal */}
+      
     </div>
   );
 }
@@ -622,9 +657,24 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: "center", backdropFilter: "blur(2px)",
   },
   modal: {
-    background: "#ffffff", border: "1px solid #d1d5db", borderRadius: 14,
-    boxShadow: "0 20px 60px rgba(0,0,0,0.18)", width: "min(95vw, 980px)",
-    maxHeight: "92vh", display: "flex", flexDirection: "column", overflow: "hidden",
+    background: "#ffffff",
+    border: "1px solid #d1d5db",
+    borderRadius: 14,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
+
+    width: "min(95vw, 980px)",
+    height: "min(90vh, 720px)",
+
+    minWidth: 500,
+    minHeight: 400,
+    maxWidth: "98vw",
+    maxHeight: "95vh",
+
+    display: "flex",
+    flexDirection: "column",
+
+    overflow: "hidden",
+    resize: "both",
   },
   header: {
     display: "flex", alignItems: "center", justifyContent: "space-between",

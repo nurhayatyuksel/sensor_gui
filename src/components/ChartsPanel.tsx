@@ -20,6 +20,7 @@ import type {
   CvPoint,
 } from "../types";
 
+
 type Mode = "Basınç" | "Pozisyon" | "Regülatör" | "Debi";
 
 type Props = {
@@ -31,6 +32,7 @@ type Props = {
   openingPressureData: OpeningPressurePoint[];
   openingFlowData: OpeningFlowPoint[];
   cvData: CvPoint[];
+  decimalPlaces: number;
   onReset: () => void;
 };
 
@@ -79,17 +81,21 @@ function TimeBasedCharts({
   openingTimeData,
   currentTimeData,
   timeWindow,
+  decimalPlaces
 }: {
   flowData: FlowPoint[];
   pressureData: PressurePoint[];
   openingTimeData: OpeningTimePoint[];
   currentTimeData: CurrentTimePoint[];
   timeWindow: TimeWindow;
+  decimalPlaces: number;
 }) {
   const filteredFlow = filterByWindow(flowData, timeWindow);
   const filteredPressure = filterByWindow(pressureData, timeWindow);
   const filteredOpening = filterByWindow(openingTimeData, timeWindow);
   const filteredCurrent = filterByWindow(currentTimeData, timeWindow);
+  const fmt = (v: unknown) =>
+    typeof v === "number" ? v.toFixed(decimalPlaces) : String(v);
 
   return (
     <div className="charts-grid">
@@ -103,12 +109,14 @@ function TimeBasedCharts({
                 dataKey="time"
                   domain={["dataMin", "dataMax"]}
                   type="number"
+                  tickFormatter={fmt}
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Basınç [bar]", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line type="monotone" dataKey="p1" stroke="#ff4f7b" dot={false} isAnimationActive={false} name="P₁ [bar]" />
               <Line type="monotone" dataKey="p2" stroke="#2b7de9" dot={false} isAnimationActive={false} name="P₂ [bar]" />
@@ -128,12 +136,14 @@ function TimeBasedCharts({
                 dataKey="time"
                   domain={["dataMin", "dataMax"]}
                   type="number"
+                  tickFormatter={fmt}
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Debi [kg/s]", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line
                 type="monotone"
@@ -158,12 +168,14 @@ function TimeBasedCharts({
                 dataKey="time"
                 domain={["dataMin", "dataMax"]}
                 type="number"
+                tickFormatter={fmt}
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Açıklık [%]", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line
                 type="monotone"
@@ -188,12 +200,14 @@ function TimeBasedCharts({
                 dataKey="time"
                 domain={["dataMin", "dataMax"]}
                 type="number"
+                tickFormatter={fmt}
                 label={{ value: "Zaman [s]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Akım [mA]", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line
                 type="monotone"
@@ -215,11 +229,15 @@ function PositionBasedCharts({
   openingPressureData,
   openingFlowData,
   cvData,
+  decimalPlaces,  
 }: {
   openingPressureData: OpeningPressurePoint[];
   openingFlowData: OpeningFlowPoint[];
   cvData: CvPoint[];
+  decimalPlaces: number;
 }) {
+    const fmt = (v: unknown) =>
+      typeof v === "number" ? v.toFixed(decimalPlaces) : String(v);
   return (
     <div className="charts-grid charts-grid--3col">
       <div className="chart-block">
@@ -232,12 +250,14 @@ function PositionBasedCharts({
                 dataKey="opening"
                 domain={["dataMin", "dataMax"]}
                 type="number"
+                tickFormatter={fmt}
                 label={{ value: "Açıklık [%]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Basınç [bar]", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line type="monotone" dataKey="p1" stroke="#ff4f7b" dot={false} isAnimationActive={false} name="P₁ [bar]" />
               <Line type="monotone" dataKey="p2" stroke="#2b7de9" dot={false} isAnimationActive={false} name="P₂ [bar]" />
@@ -257,12 +277,14 @@ function PositionBasedCharts({
                 dataKey="opening"
                 domain={["dataMin", "dataMax"]}
                 type="number"
+                tickFormatter={fmt}
                 label={{ value: "Açıklık [%]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Debi [kg/s]", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line type="monotone" dataKey="debi" stroke="#16a34a" dot={false} isAnimationActive={false} name="Debi [kg/s]" />
             </LineChart>
@@ -280,12 +302,14 @@ function PositionBasedCharts({
                 dataKey="opening"
                 domain={["dataMin", "dataMax"]}
                 type="number"
+                tickFormatter={fmt}
                 label={{ value: "Açıklık [%]", position: "insideBottom", offset: -5 }}
               />
               <YAxis
+                tickFormatter={fmt}
                 label={{ value: "Cᵥ", angle: -90, position: "insideLeft" }}
               />
-              <Tooltip />
+              <Tooltip formatter={fmt} />
               <Legend verticalAlign="top" />
               <Line type="monotone" dataKey="cv" stroke="#7c3aed" dot={false} isAnimationActive={false} name="Cᵥ" />
             </LineChart>
@@ -304,6 +328,7 @@ export function ChartsPanel({
   currentTimeData,
   openingPressureData,
   openingFlowData,
+  decimalPlaces,
   cvData,
   onReset,
 }: Props) {
@@ -390,6 +415,7 @@ export function ChartsPanel({
             openingPressureData={openingPressureData}
             openingFlowData={openingFlowData}
             cvData={cvData}
+            decimalPlaces={decimalPlaces}
           />
         ) : (
           <TimeBasedCharts
@@ -398,6 +424,7 @@ export function ChartsPanel({
             openingTimeData={openingTimeData}
             currentTimeData={currentTimeData}
             timeWindow={timeWindow}
+            decimalPlaces={decimalPlaces}
           />
         )}
       </div>

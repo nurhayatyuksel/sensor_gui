@@ -46,6 +46,8 @@ export type AppSettings = {
   hardware: HardwareSettings;
   valve:    ValveSettings;
   sim_mode: boolean;  // Simülatör modu aktif mi?
+  decimal_places: number;
+
 };
 
 type Props = {
@@ -76,6 +78,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     cd:                  0.65,
   },
   sim_mode: false,
+  decimal_places: 3,
 };
 
 // ----------------------------------------------------------------
@@ -93,17 +96,17 @@ declare global {
   }
 }
 
-async function loadSettingsFromDisk(): Promise<AppSettings> {
-  if (window.electronAPI) {
-    const saved = await window.electronAPI.loadSettings();
-    if (saved) return saved;
-  } else {
-    // Geliştirme modu: localStorage
-    const raw = localStorage.getItem("appSettings");
-    if (raw) return JSON.parse(raw) as AppSettings;
-  }
-  return DEFAULT_SETTINGS;
-}
+//async function loadSettingsFromDisk(): Promise<AppSettings> {
+//  if (window.electronAPI) {
+//    const saved = await window.electronAPI.loadSettings();
+//    if (saved) return saved;
+//  } else {
+//    // Geliştirme modu: localStorage
+//    const raw = localStorage.getItem("appSettings");
+//    if (raw) return JSON.parse(raw) as AppSettings;
+// }
+//  return DEFAULT_SETTINGS;
+//}
 
 
 async function saveSettingsToDisk(settings: AppSettings): Promise<{ ok: boolean; error?: string }> {
@@ -134,7 +137,7 @@ async function saveSettingsToDisk(settings: AppSettings): Promise<{ ok: boolean;
 
 export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
   const [settings,    setSettings]    = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [comPorts,    setComPorts]    = useState<string[]>([]);
+  const [comPorts]    = useState<string[]>([]);
   const [saving,      setSaving]      = useState(false);
   const [saveError,   setSaveError]   = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -363,6 +366,20 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
                   type="number" min={1} max={40}
                   value={settings.hardware.max_revolutions}
                   onChange={e => setHw("max_revolutions", Number(e.target.value))}
+                />
+              </SettingRow>
+
+              <SettingRow label="Ondalık Basamak" note="Grafik eksenlerinde gösterilecek basamak sayısı (1–5)">
+                <input
+                  type="number" min={1} max={5}
+                  value={settings.decimal_places ?? 3}
+                  onChange={e =>
+                    setSettings(prev => ({
+                      ...prev,
+                      decimal_places: Math.min(5, Math.max(1, Number(e.target.value) || 3)),
+                    }))
+                  }
+                  style={{ ...s.input, width: 80 }}
                 />
               </SettingRow>
 

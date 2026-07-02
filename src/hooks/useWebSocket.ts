@@ -25,7 +25,7 @@ const RECONNECT_MAX_MS  = 30_000;
 
 // Grafiklerde tutulacak maksimum nokta sayısı.
 // 50 Hz × 120 s = 6000 — tüm zaman pencerelerini karşılar.
-export const MAX_CHART_POINTS = 500;
+export const MAX_CHART_POINTS = 6000;
 
 // ----------------------------------------------------------------
 // Tipler
@@ -94,6 +94,8 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
     if (!isMounted.current) return;
 
     setConnectionStatus("connecting");
+    setSensorHistory([]);
+    setSensorData(null);
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
@@ -165,12 +167,11 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
         setSensorData(payload);
 
         // Grafik geçmişine ekle, MAX_CHART_POINTS'i aşınca en eskiyi at
-        setSensorHistory((prev) => {
-          const next = [...prev, payload];
-          return next.length > MAX_CHART_POINTS
-            ? next.slice(next.length - MAX_CHART_POINTS)
-            : next;
-        });
+        setSensorHistory((prev) => 
+          prev.length >= MAX_CHART_POINTS
+            ? [...prev.slice(1), payload]   // en eskiyi at, yeniyi sona ekle
+            : [...prev, payload]);
+
         break;
       }
 
