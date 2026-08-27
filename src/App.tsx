@@ -19,13 +19,16 @@ import { SettingsModal }     from "./components/SettingsModal";
 import { MotorControlModal } from "./components/MotorControlModal";
 import { sensorCards } from "./data/sensorConfig";
 import { useWebSocket }      from "./hooks/useWebSocket.ts";
-import type { ValveSettings } from "./components/SettingsModal";
+
 import type { FluidOption, SensorPayload } from "./types";
+import type { ValveSettings, AppSettings } from "./components/SettingsModal";
 
 import {
   fluidOptions,
   limitParameters,
   pidParameters,
+  fuzzyParameters,
+  adaptParameters,
 } from "./data/mockData";
 
 // ----------------------------------------------------------------
@@ -54,6 +57,60 @@ function parseNum(s: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function safeNum(n: number | undefined | null, fallback = 0): number {
+  return typeof n === "number" && Number.isFinite(n) ? n : fallback;
+}
+
+function getOpeningPct(payload: SensorPayload, stepResolution: number): number {
+  if (typeof payload.opening_pct === "number" && Number.isFinite(payload.opening_pct)) {
+    return clamp(payload.opening_pct, 0, 100);
+  }
+
+  const maxTicks = (payload.total_turns ?? 0) * stepResolution;
+  if (maxTicks <= 0) return 0;
+
+  return clamp((payload.motor_pos_ticks / maxTicks) * 100, 0, 100);
+}
+
+// Geçici frontend debi hesabı.
+// Backend mass_flow_kg_s göndermeye başlarsa otomatik onu kullanır.
+function estimateAirMassFlowKgS(
+  payload: SensorPayload,
+  stepResolution: number,
+  valveSettings: ValveSettings
+): number {
+  if (
+    typeof payload.mass_flow_kg_s === "number" &&
+    Number.isFinite(payload.mass_flow_kg_s)
+  ) {
+    return Math.max(0, payload.mass_flow_kg_s);
+  }
+
+  const p1 = safeNum(payload.p1_raw);
+  const p2 = safeNum(payload.p2_raw);
+  const deltaPBar = Math.max(0, p1 - p2);
+  const openingPct = getOpeningPct(payload, stepResolution);
+
+  if (deltaPBar <= 0 || openingPct <= 0) return 0;
+
+  const cd = valveSettings.cd ?? 0.65;
+  const dM = (valveSettings.orifice_diameter_mm ?? 10) / 1000.0;
+  const fullArea = Math.PI * dM * dM / 4.0;
+  const effectiveArea = fullArea * (openingPct / 100.0);
+
+  // Yaklaşık hava yoğunluğu. Görsel trend için yeterli; nihai hassas hesabı backend'e almak daha doğru.
+  const tempK = 293.15;
+  const rAir = 287.05;
+  const pAvgBar = Math.max((p1 + p2) / 2.0, 1.01325);
+  const rho = (pAvgBar * 1e5) / (rAir * tempK);
+
+  return cd * effectiveArea * Math.sqrt(2.0 * deltaPBar * 1e5 * rho);
+}
+
 // step_resolution: hardware.yaml ile eşleşmeli (varsayılan 1000)
 //const [stepResolution, setStepResolution] = useState<number>(1000);
 // ----------------------------------------------------------------
@@ -62,7 +119,8 @@ function parseNum(s: string | undefined): number | null {
 
 function payloadToCardValues(
   payload: SensorPayload | null,
-  stepResolution: number
+  stepResolution: number,
+  valveSettings: ValveSettings
 ): Record<string, string> {
   if (!payload) return {};
 
@@ -75,19 +133,23 @@ function payloadToCardValues(
   // Açıklık % = motor_pos_ticks / (total_turns × step_resolution) × 100
   // total_turns (addr 1): firmware kalibrasyonda bu değeri set eder.
   // Kalibrasyon yapılmamışsa (total_turns = 0 / undefined) → 0 göster.
-  const maxTicks   = (payload.total_turns ?? 0) * stepResolution;
-  const openingPct = maxTicks > 0
-    ? (payload.motor_pos_ticks / maxTicks) * 100
-    : 0;
+  //const maxTicks   = (payload.total_turns ?? 0) * stepResolution;
+  //const openingPct = maxTicks > 0
+  //  ? (payload.motor_pos_ticks / maxTicks) * 100
+  //  : 0;
+
+  const openingPct = getOpeningPct(payload, stepResolution);
+  const flowKgS = estimateAirMassFlowKgS(payload, stepResolution, valveSettings);
+
   
+  const p1 = safeNum(payload.p1_raw);
+  const p2 = safeNum(payload.p2_raw);
+
   return {
-    // Basınç sensörü şu an register haritasında yok → 0.0
-    giris:    payload.p1_raw.toFixed(2),
-    cikis:    payload.p2_raw.toFixed(2),
-    fark:     (payload.p1_raw - payload.p2_raw).toFixed(2),
-    // Debi hesaplama: şimdilik akım mA değerini ham göster
-    debi:     payload.motor_current_ma.toFixed(2),
-    // Pozisyon: tur.adım formatında
+    giris:    p1.toFixed(2),
+    cikis:    p2.toFixed(2),
+    fark:     Math.max(0, p1 - p2).toFixed(2),
+    debi:     flowKgS.toFixed(4),
     pozisyon: openingPct.toFixed(2),
   };
   
@@ -109,7 +171,9 @@ function App() {
     connect,
     disconnect,
     clearHistory,
-  } = useWebSocket();
+    deviceConnected,
+    
+  } = useWebSocket(true);
 
   // ---------- UI State ----------
   const [activeMode,     setActiveMode]     = useState<Mode>("Basınç");
@@ -117,9 +181,16 @@ function App() {
  
   const [settingsOpen,   setSettingsOpen]   = useState(false);
   const [showMotorControl, setShowMotorControl] = useState(false);
+    // ---- Ortak hedef pozisyon ----
+  // targetTicks === null  → kullanıcı bir şey yazmıyor, kutular CANLI pozisyonu izler.
+  // targetTicks !== null  → kullanıcı hedef giriyor; yüzde ve tick kutuları
+  //                          bu tek değerin iki gösterimi.
+  const [targetTicks, setTargetTicks] = useState<number | null>(null);
+  const [pctText,     setPctText]     = useState<string>("");
+  const [pidAlgorithm, setPidAlgorithm] = useState<1 | 2 | 3>(1);
   const [decimalPlaces, setDecimalPlaces] = useState(3);
   const t0Ref = useRef<number>(0);
-  const [stepResolution, setStepResolution] = useState<number>(1000);
+  const [stepResolution, setStepResolution] = useState<number>(4096);
   const [valveSettings, setValveSettings] = useState<ValveSettings>({
   orifice_diameter_mm: 10.0,
   thread_pitch_mm:     1.5,
@@ -128,7 +199,7 @@ function App() {
 });
 
 useEffect(() => {
-  fetch("http://localhost:8000/settings")
+  fetch("/settings")
     .then(r => r.json())
     .then(data => {
       if (data.ok && data.hardware) {
@@ -138,7 +209,8 @@ useEffect(() => {
           max_stroke_mm:       data.hardware.max_stroke_mm       ?? prev.max_stroke_mm,
           cd:                  data.hardware.cd                  ?? prev.cd,
         }));
-setStepResolution(data.hardware.step_resolution ?? 1000);
+setStepResolution(data.hardware.step_resolution ?? 4096);
+setDecimalPlaces(data.hardware.decimal_places ?? 3);
       }
     })
     .catch(() => {});
@@ -165,8 +237,8 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
 
   // Backend'den gelen anlık sensör değerleri (salt okunur kartlar için)
   const liveSensorValues = useMemo(
-    () => payloadToCardValues(sensorData, stepResolution),
-    [sensorData, stepResolution]
+    () => payloadToCardValues(sensorData, stepResolution, valveSettings),
+    [sensorData, stepResolution, valveSettings]
   );
 
   // Grafik için SensorPayload geçmişini mevcut tiplere dönüştür.
@@ -179,10 +251,10 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
 
     return sensorHistory.map((p) => ({
       time:    p.timestamp - t0Ref.current,
-      debi:    p.motor_current_ma,
-      aciklik: Math.floor(p.motor_pos_ticks / stepResolution),
+      debi:    estimateAirMassFlowKgS(p, stepResolution, valveSettings),
+      aciklik: getOpeningPct(p, stepResolution),
   }));
-  }, [sensorHistory, stepResolution]);
+  }, [sensorHistory, stepResolution, valveSettings]);
 
   const pressureData = useMemo(() => {
     if (sensorHistory.length === 0) return [];
@@ -190,12 +262,17 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
     t0Ref.current = sensorHistory[0].timestamp;
 }
 
-    return sensorHistory.map((p) => ({
+    return sensorHistory.map((p) => {
+    const p1 = safeNum(p.p1_raw);
+    const p2 = safeNum(p.p2_raw);
+
+    return {
       time:   p.timestamp - t0Ref.current,
-      p1:     p.p1_raw,
-      p2:     p.p2_raw,
-      deltaP: p.p1_raw - p.p2_raw,
-  }));
+      p1,
+      p2,
+      deltaP: Math.max(0, p1 - p2),
+    };
+  });
   }, [sensorHistory]);
 
   const openingTimeData = useMemo(() => {
@@ -225,10 +302,44 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
   }, [sensorHistory]);
 
   // Açıklık-basınç ve açıklık-debi grafikleri için (şimdilik boş — basınç yok)
-  const openingPressureData = useMemo(() => [], []);
-  const openingFlowData     = useMemo(() => [], []);
-  const cvData              = useMemo(() => [], []);
+  const openingPressureData = useMemo(
+    () =>
+      pressureData.map((p, i) => ({
+        opening: flowData[i]?.aciklik ?? 0,
+        p1: p.p1,
+        p2: p.p2,
+        deltaP: p.deltaP,
+      })),
+    [pressureData, flowData]
+  );
 
+  const openingFlowData = useMemo(
+    () =>
+      flowData.map((p) => ({
+        opening: p.aciklik,
+        debi: p.debi,
+      })),
+    [flowData]
+  );
+
+  const cvData = useMemo(() => [], []);
+    // ---------- Ortak hedef: türetilmiş değerler ----------
+
+  const currentTicks = sensorData?.motor_pos_ticks ?? 0;
+
+  // %100 referansı: cihazın bildirdiği tur sayısı × adım çözünürlüğü
+  const maxTicks = (sensorData?.total_turns ?? 0) * stepResolution;
+
+  const ticksToPct = useCallback(
+    (t: number) => (maxTicks > 0 ? (t * 100) / maxTicks : 0),
+    [maxTicks]
+  );
+
+  // Kutularda gösterilecek değerler
+  const displayTicks = targetTicks ?? currentTicks;
+  const displayPct   = targetTicks === null
+    ? (maxTicks > 0 ? ticksToPct(currentTicks).toFixed(1) : "")
+    : pctText;
   // ---------- Handlers ----------
 
   const handleInputChange = useCallback((key: string, value: string) => {
@@ -252,18 +363,79 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
   }
   }, [activeMode]);
 
-  const handleConnect = useCallback(() => {
+  const handleSettingsSaved = useCallback((s: AppSettings) => {
+    setValveSettings(s.valve);
+    setDecimalPlaces(s.decimal_places ?? 3);
+    setStepResolution(s.hardware.step_resolution ?? 4096);
+
+    if (connectionStatus !== "connected") {
       t0Ref.current = 0;
-      clearHistory();
       connect();
-      console.info("Grafikler sıfırlandı.");
-    }, [connect, clearHistory]);
+    }
+  }, [connect, connectionStatus]);
+
+  const handleToggleConnection = useCallback(() => {
+    if (connectionStatus === "disconnected") {
+      t0Ref.current = 0;   // yeni zaman ekseni
+      connect();
+    } else {
+      disconnect();        // otomatik yeniden bağlanmayı da durdurur
+    }
+  }, [connectionStatus, connect, disconnect]);
 
   const handleReset = useCallback(() => {
       t0Ref.current = 0;
       clearHistory();
       console.info("Grafikler sıfırlandı.");
     }, [clearHistory]);
+
+  // Yüzde kutusuna yazıldı → ortak hedefi güncelle (tick kutusu anında karşılığını gösterir)
+  const setTargetFromPct = useCallback((text: string) => {
+    setPctText(text);
+    const n = parseNum(text);
+    if (n === null || maxTicks <= 0) {
+      setTargetTicks(null);          // kutu boşaltıldı → canlı pozisyona dön
+      return;
+    }
+    setTargetTicks(Math.round((clamp(n, 0, 100) * maxTicks) / 100));
+  }, [maxTicks]);
+
+  // Tick kutusuna yazıldı (Motor Kontrol) → ortak hedefi güncelle, yüzdeyi tazele
+  const setTargetFromTicks = useCallback((ticks: number) => {
+    const t = maxTicks > 0
+      ? Math.round(clamp(ticks, 0, maxTicks))
+      : Math.max(0, Math.round(ticks));
+    setTargetTicks(t);
+    setPctText(maxTicks > 0 ? ((t * 100) / maxTicks).toFixed(1) : "");
+  }, [maxTicks]);
+
+  // Tek gönderim noktası — hem "Git" hem "Pozisyona Git" bunu çağırır
+  const handleGoto = useCallback(() => {
+    if (!sensorData || sensorData.calibration_status !== 1) {
+      alert("Önce kalibrasyon tamamlanmalı.");
+      return;
+    }
+    if (maxTicks <= 0) {
+      alert("Cihazdan geçerli tur bilgisi gelmiyor (total_turns = 0). Kalibrasyonu tekrarlayın.");
+      return;
+    }
+    const target = targetTicks ?? currentTicks;
+    if (target < 0 || target > maxTicks) {
+      alert(`Hedef 0 – ${maxTicks} tick aralığında olmalı.`);
+      return;
+    }
+
+    sendMessage({ type: "SET_MODE",     payload: { mode: 3 } });
+    sendMessage({ type: "DIGITAL_STEP", payload: { step: target } });
+
+    // Komut gitti → kutular tekrar canlı pozisyonu izlesin
+    setTargetTicks(null);
+    setPctText("");
+  }, [sensorData, maxTicks, targetTicks, currentTicks, sendMessage]);
+
+  const handleQuickStop = useCallback(() => {
+    sendMessage({ type: "STOP", payload: {} });
+  }, [sendMessage]);
 
   // PID parametrelerini cihaza gönder. Boş alanlar atlanır (kazara 0 yazılmaz).
   // Kazançlar atomik (FC16) olduğu için Kp/Ki/Kd ÜÇÜ birden dolu olmalı.
@@ -282,6 +454,55 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
     }
     console.info("PID parametreleri gönderildi.");
   }, [modeValues, activeMode, sendMessage]);
+
+  const handleSelectAlgorithm = useCallback((algo: 1 | 2 | 3) => {
+    setPidAlgorithm(algo);
+    sendMessage({ type: "SET_PID_ALGORITHM", payload: { algorithm: algo } });
+  }, [sendMessage]);
+
+  const handleApplyFuzzy = useCallback(() => {
+    const f = modeValues[activeMode];
+    const kiSpan = parseNum(f.fuzzyKiSpan);
+    if (kiSpan !== null && kiSpan > 30) {
+      const ok = window.confirm(
+        `Ki derinliği %${kiSpan} — %30 üzeri kalıcı salınım (hunting) riski taşır. Yine de gönderilsin mi?`
+      );
+      if (!ok) return;
+    }
+    sendMessage({
+      type: "SET_FUZZY_PARAMS",
+      payload: {
+        err_scale:  parseNum(f.fuzzyErrScale)  ?? 2.0,
+        derr_scale: parseNum(f.fuzzyDerrScale) ?? 1.0,
+        kp_span:    parseNum(f.fuzzyKpSpan)    ?? 50,
+        ki_span:    kiSpan ?? 25,
+        kd_span:    parseNum(f.fuzzyKdSpan)    ?? 50,
+      },
+    });
+  }, [modeValues, activeMode, sendMessage]);
+
+  const handleApplyAdapt = useCallback(() => {
+    const f = modeValues[activeMode];
+    sendMessage({
+      type: "SET_ADAPT_PARAMS",
+      payload: {
+        rate:      parseNum(f.adaptRate)     ?? 0.020,
+        gain_min:  parseNum(f.adaptGainMin)  ?? 50,
+        gain_max:  parseNum(f.adaptGainMax)  ?? 300,
+        window_ms: parseNum(f.adaptWindowMs) ?? 2000,
+        osc_limit: parseNum(f.adaptOscLimit) ?? 3,
+      },
+    });
+  }, [modeValues, activeMode, sendMessage]);
+
+// Cihaz tek doğru kaynak: yöntem yazma reddedilirse (Rev 2 §4.3 — echo
+  // gelse bile uygulanmayabilir) seçici otomatik gerçek değere geri döner.
+  useEffect(() => {
+    const devAlgo = sensorData?.pid_algorithm;
+    if (devAlgo === 1 || devAlgo === 2 || devAlgo === 3) {
+      setPidAlgorithm(devAlgo);
+    }
+  }, [sensorData?.pid_algorithm]);
 
   // Sensör (ADC) kalibrasyonunu cihaza gönder.
 
@@ -308,29 +529,15 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
           connectionStatus={connectionStatus}
           latestPacket={sensorData}
           valveSettings={valveSettings}
+          targetTicks={displayTicks}
+          maxTicks={maxTicks}
+          onTargetTicksChange={setTargetFromTicks}
+          onGoto={handleGoto}
         />
     )}
     
     <div className="app-shell" style={{ paddingTop: 8 + bannerOffset }}>
-      {/* Kalibrasyon Durumu Badge */}
-      <div
-        style={{
-          position: "fixed",
-          top: 8,
-          right: 16,
-          background: sensorData?.calibration_status === 1 ? "#166534" : "#7f1d1d",
-          color: "white",
-          borderRadius: 8,
-          padding: "4px 12px",
-          fontSize: 12,
-          fontWeight: 600,
-          zIndex: 9997,
-          letterSpacing: "0.5px",
-        }}
-      >
-        {sensorData?.calibration_status === 1 ? "✔ Kalibre" : "✘ Kalibre Değil"}
-      </div>
-
+      
       {/* Bağlantı Durum Bandı — sadece aktif bağlanma sırasında */}
       {connectionStatus === "connecting" && (
         <div
@@ -425,6 +632,39 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
             </button>
         </div>
 
+        <div className="quick-control-bar">
+          <span className="quick-control-label">Hızlı Kontrol(%)</span>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={0.1}
+            value={displayPct}
+            onChange={(e) => setTargetFromPct(e.target.value)}
+            placeholder="Açıklık %"
+            className="quick-control-input"
+            disabled={connectionStatus !== "connected"}
+          />
+          <span style={{ fontSize: 12, color: "#6b7280", whiteSpace: "nowrap" }}>
+            = {displayTicks} tick{maxTicks > 0 ? ` / ${maxTicks}` : ""}
+            {targetTicks === null && " (canlı)"}
+          </span>
+          <button
+            className="quick-control-btn quick-control-goto"
+            onClick={handleGoto}
+            disabled={connectionStatus !== "connected"}
+          >
+            Git
+          </button>
+          <button
+            className="quick-control-btn quick-control-stop"
+            onClick={handleQuickStop}
+            disabled={connectionStatus !== "connected"}
+          >
+            ■ Durdur
+          </button>
+        </div>
+
         <ChartsPanel
           activeMode={activeMode}
           flowData={flowData}
@@ -439,33 +679,68 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
         />
       </main>
 
-      <SettingsModal
+       <SettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-       onSaved={(s) => {
-          setValveSettings(s.valve);
-          setDecimalPlaces(s.decimal_places ?? 3);
-          setStepResolution(s.hardware.step_resolution ?? 1000);
-          console.log("Ayarlar güncellendi", s);
-        }}
+        onSaved={handleSettingsSaved}
       />
 
       {/* Sağ: Parametre Paneli */}
       <aside className="right-sidebar">
-        <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-          <button
-            onClick={handleConnect}
-            disabled={connectionStatus === "connecting" || connectionStatus === "connected"}
-            style={{ flex: 1 }}
+<div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {/* Tarayıcı ↔ Backend */}
+          <span
+            style={{
+              width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+              background:
+                connectionStatus === "connected"  ? "#22c55e" :
+                connectionStatus === "connecting" ? "#f59e0b" : "#ef4444",
+            }}
+          />
+          <small style={{ color: "#374151" }}>
+            {connectionStatus === "connected"  ? "Backend bağlı" :
+             connectionStatus === "connecting" ? "Bağlanılıyor..." : "Backend yok"}
+          </small>
+
+          {/* Backend ↔ Cihaz (Modbus) */}
+          <span
+            style={{
+              width: 10, height: 10, borderRadius: "50%", flexShrink: 0, marginLeft: 6,
+              background: deviceConnected === true ? "#22c55e"
+                        : deviceConnected === false ? "#ef4444" : "#9ca3af",
+            }}
+          />
+          <small style={{ color: "#374151" }}>
+            {deviceConnected === true  ? "Cihaz yanıt veriyor" :
+             deviceConnected === false ? "Cihaz yanıt vermiyor" : "Cihaz durumu bilinmiyor"}
+          </small>
+          <span
+            style={{
+              marginLeft: 6,
+              padding: "2px 8px",
+              borderRadius: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              color: "#fff",
+              background: sensorData?.calibration_status === 1 ? "#166534" : "#7f1d1d",
+            }}
           >
-            {connectionStatus === "connecting" ? "⏳ Bağlanıyor..." : "▶ Bağlan"}
-          </button>
+            {sensorData?.calibration_status === 1 ? "✔ Kalibre" : sensorData?.calibration_status === 2 ? "⚠ KALİBRASYON HATASI"
+         : "✘ Kalibre Değil"}
+          </span>       
+
+
           <button
-            onClick={disconnect}
-            disabled={connectionStatus === "disconnected"}
-            style={{ flex: 1 }}
+            type="button"
+            onClick={handleToggleConnection}
+            style={{
+              marginLeft: "auto", height: 26, padding: "0 12px",
+              border: "none", borderRadius: 4, fontSize: 12, fontWeight: 600,
+              cursor: "pointer", color: "#fff",
+              background: connectionStatus === "disconnected" ? "#007f78" : "#e53e3e",
+            }}
           >
-            ■ Bağlantıyı Kes
+            {connectionStatus === "disconnected" ? "▶ Bağlan" : "■ Kes"}
           </button>
         </div>
 
@@ -496,6 +771,97 @@ setStepResolution(data.hardware.step_resolution ?? 1000);
         >
           PID Uygula
         </button>
+        {/* ---- PID Yöntemi (Rev 2) ---- */}
+        <div className="param-section">
+          <h3>PID Yöntemi</h3>
+          <div className="algo-btn-group">
+            {([[1, "Klasik"], [2, "Fuzzy"], [3, "Adaptive"]] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`algo-btn${pidAlgorithm === id ? " active" : ""}`}
+                onClick={() => handleSelectAlgorithm(id)}
+                disabled={connectionStatus !== "connected"}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {pidAlgorithm === 2 && (
+          <>
+            <ParameterSection
+              title="Fuzzy Parametreleri"
+              items={fuzzyParameters}
+              values={currentFormValues}
+              onChange={handleInputChange}
+            />
+            <button
+              type="button"
+              className="apply-btn"
+              onClick={handleApplyFuzzy}
+              disabled={connectionStatus !== "connected"}
+            >
+              Fuzzy Uygula
+            </button>
+            <div className="param-readback">
+              <small>
+                Cihazda → Hata öl.: {sensorData?.fuzzy_err_scale?.toFixed(2) ?? "—"} bar &nbsp;|&nbsp;
+                dHata öl.: {sensorData?.fuzzy_derr_scale?.toFixed(2) ?? "—"} bar/s<br />
+                Derinlik → Kp: %{sensorData?.fuzzy_kp_span ?? "—"} &nbsp;
+                Ki: %{sensorData?.fuzzy_ki_span ?? "—"} &nbsp;
+                Kd: %{sensorData?.fuzzy_kd_span ?? "—"}
+              </small>
+            </div>
+          </>
+        )}
+
+        {pidAlgorithm === 3 && (
+          <>
+            <ParameterSection
+              title="Adaptive Parametreleri"
+              items={adaptParameters}
+              values={currentFormValues}
+              onChange={handleInputChange}
+            />
+            <button
+              type="button"
+              className="apply-btn"
+              onClick={handleApplyAdapt}
+              disabled={connectionStatus !== "connected"}
+            >
+              Adaptive Uygula
+            </button>
+            <div className="param-readback">
+              <small>
+                Cihazda → Hız: {sensorData?.adapt_rate?.toFixed(3) ?? "—"} &nbsp;|&nbsp;
+                Ölçek: %{sensorData?.adapt_gain_min ?? "—"}–%{sensorData?.adapt_gain_max ?? "—"}<br />
+                Pencere: {sensorData?.adapt_window_ms ?? "—"} ms &nbsp;|&nbsp;
+                Salınım eşiği: {sensorData?.adapt_osc_limit ?? "—"}
+              </small>
+            </div>
+          </>
+        )}
+
+        {/* ---- Aktif PID izleme (34-37) — Fuzzy/Adaptive'in çalıştığını
+             kanıtlayan tek alan (Rev 2 §3.7) ---- */}
+        <div className="param-readback">
+          <small style={{ fontWeight: 600 }}>Aktif PID (cihazda gerçekten devrede)</small><br />
+          <small>
+            Yöntem:{" "}
+            {sensorData?.pid_algorithm === 1 ? "Klasik"
+              : sensorData?.pid_algorithm === 2 ? "Fuzzy"
+              : sensorData?.pid_algorithm === 3 ? "Adaptive"
+              : "—"}<br />
+            Kp: {sensorData?.pid_active_kp?.toFixed(2) ?? "—"} &nbsp;
+            Ki: {sensorData?.pid_active_ki?.toFixed(2) ?? "—"} &nbsp;
+            Kd: {sensorData?.pid_active_kd?.toFixed(2) ?? "—"}<br />
+            Çıkış: {sensorData?.pid_output?.toFixed(2) ?? "—"} % strok &nbsp;|&nbsp;
+            Servo hata sayacı: {sensorData?.servo_comm_fail ?? "—"}
+          </small>
+        </div>
+
           <div className="param-readback">
             <small style={{ fontWeight: 600 }}>Sensör Kalibrasyon (Motor Kontrol'den ayarla)</small><br />
             <small>

@@ -111,6 +111,28 @@ export type SensorPayload = {
   pid_deadband?:       number;  // addr 18 — bar
   adc_offset?:         number;  // addr 19 — bar
   adc_gain?:           number;  // addr 20 — çarpan
+  // --- Rev 2: PID yöntem seçimi ve parametreleri (23-33) ---
+  servo_comm_fail?:  number;  // addr 4 — servo haberleşme hata sayacı (0 = sağlıklı)
+  pid_algorithm?:    number;  // addr 23 — 1=Klasik, 2=Fuzzy, 3=Adaptive
+  fuzzy_err_scale?:  number;  // addr 24 — bar
+  fuzzy_derr_scale?: number;  // addr 25 — bar/s
+  fuzzy_kp_span?:    number;  // addr 26 — %
+  fuzzy_ki_span?:    number;  // addr 27 — %
+  fuzzy_kd_span?:    number;  // addr 28 — %
+  adapt_rate?:       number;  // addr 29 — çarpan
+  adapt_gain_min?:   number;  // addr 30 — %
+  adapt_gain_max?:   number;  // addr 31 — %
+  adapt_window_ms?:  number;  // addr 32 — ms
+  adapt_osc_limit?:  number;  // addr 33 — adet
+  // --- Rev 2: PID izleme, SALT OKUNUR (34-37) ---
+  pid_active_kp?:    number;  // addr 34 — o an devrede olan Kp
+  pid_active_ki?:    number;  // addr 35
+  pid_active_kd?:    number;  // addr 36
+  pid_output?:       number;  // addr 37 — valf strok oranı %
+
+  delta_p?: number;
+  mass_flow_kg_s?: number;
+  opening_pct?: number;
  
 };
  

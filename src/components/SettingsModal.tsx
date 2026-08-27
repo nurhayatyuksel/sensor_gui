@@ -68,7 +68,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     slave_id:        1,
     modbus_timeout:  0.1,
     sample_rate_hz:  50,
-    step_resolution: 1000,
+    step_resolution: 4096,
     max_revolutions: 10,
   },
   valve: {
@@ -109,23 +109,44 @@ declare global {
 //}
 
 
-async function saveSettingsToDisk(settings: AppSettings): Promise<{ ok: boolean; error?: string }> {
+type SaveResult = {
+  ok: boolean;
+  error?: string;
+  connected?: boolean;
+  port?: string;
+};
+
+async function saveSettingsToDisk(settings: AppSettings): Promise<SaveResult> {
   if (window.electronAPI) {
     const result = await window.electronAPI.saveSettings(settings);
     return { ok: result.ok, error: result.error };
   }
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch("http://localhost:8000/settings", {
+    // Backend seri portu kapatıp yeniden açıyor; 5 sn kısa kalabiliyor.
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const res = await fetch("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hardware: { ...settings.hardware, ...settings.valve } }),
+      body: JSON.stringify({
+        hardware: {
+          ...settings.hardware,
+          ...settings.valve,
+          // Bunlar da hardware.yaml'da saklanıyor — merge sayesinde kaybolmuyorlar.
+          sim_mode:       settings.sim_mode,
+          decimal_places: settings.decimal_places,
+        },
+      }),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
     const data = await res.json();
-    return { ok: data.ok === true, error: data.error ?? data.detail };
+    return {
+      ok:        data.ok === true,
+      error:     data.error ?? data.detail,
+      connected: data.connected,
+      port:      data.port,
+    };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -141,6 +162,7 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
   const [saving,      setSaving]      = useState(false);
   const [saveError,   setSaveError]   = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveInfo, setSaveInfo] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"connection" | "motor" | "valve">("connection");
 
 
@@ -153,7 +175,7 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
       });
     } else {
       // Browser/dev: backend'den hardware oku, valve default'ta kalır
-      fetch("http://localhost:8000/settings")
+      fetch("/settings")
         .then(r => r.json())
         .then(data => {
           if (data.ok && data.hardware) {
@@ -161,6 +183,8 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
             setSettings(prev => ({
               ...prev,
               hardware: { ...prev.hardware, ...data.hardware },
+              sim_mode:       data.hardware.sim_mode       ?? prev.sim_mode,
+              decimal_places: data.hardware.decimal_places ?? prev.decimal_places,
               valve: {
                 orifice_diameter_mm: data.hardware.orifice_diameter_mm ?? prev.valve.orifice_diameter_mm,
                 thread_pitch_mm:     data.hardware.thread_pitch_mm     ?? prev.valve.thread_pitch_mm,
@@ -198,32 +222,38 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
   async function handleSave() {
     setSaving(true);
     setSaveError(null);
+    setSaveInfo(null);
     setSaveSuccess(false);
 
     const result = await saveSettingsToDisk(settings);
 
+    if (!result.ok) {
+      setSaveError(
+        result.error
+          ? `Ayarlar kaydedilemedi: ${result.error}`
+          : "Ayarlar kaydedilemedi. Dosya izinlerini kontrol edin."
+      );
+      setSaving(false);
+      return;
+    }
 
-    if (result.ok) {
-      setSaveSuccess(true);
-      onSaved(settings);
-
-      // Backend'i yeni ayarlarla yeniden başlat
-      if (window.electronAPI) {
-        await window.electronAPI.restartBackend();
-      }
-
-      setTimeout(() => {
-        setSaveSuccess(false);
-        onClose();
-      }, 1200);
-    } else {
-      setSaveError(result.error
-        ? `Ayarlar kaydedilemedi: ${result.error}`
-        : "Ayarlar kaydedilemedi. Dosya izinlerini kontrol edin.");}
-
+    onSaved(settings);
     setSaving(false);
-  }
 
+    // Backend süreci yeniden başlatmıyor → sayfa yenilemeye GEREK YOK.
+    // (Eski window.location.reload() 3 sn sonra ölü porta gidiyordu.)
+    if (result.connected === false) {
+      setSaveInfo(
+        `Ayarlar kaydedildi, ancak ${result.port ?? "cihaz"} açılamadı` +
+        `${result.error ? ` (${result.error})` : ""}. ` +
+        `Portu kontrol edip tekrar deneyin.`
+      );
+      return; // modal açık kalsın, kullanıcı düzeltebilsin
+    }
+
+    setSaveSuccess(true);
+    setTimeout(onClose, 800);
+  }
   // ----------------------------------------------------------------
   // Render
   // ----------------------------------------------------------------
@@ -372,11 +402,11 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
               <SettingRow label="Ondalık Basamak" note="Grafik eksenlerinde gösterilecek basamak sayısı (1–5)">
                 <input
                   type="number" min={1} max={5}
-                  value={settings.decimal_places ?? 3}
+                  value={settings.decimal_places ?? 1}
                   onChange={e =>
                     setSettings(prev => ({
                       ...prev,
-                      decimal_places: Math.min(5, Math.max(1, Number(e.target.value) || 3)),
+                      decimal_places: Math.min(5, Math.max(1, Number(e.target.value) || 1)),
                     }))
                   }
                   style={{ ...s.input, width: 80 }}
@@ -433,14 +463,14 @@ export function SettingsModal({ isOpen, onClose, onSaved }: Props) {
         {/* Alt Bar */}
         <div style={s.footer}>
           {saveError && <span style={s.errorText}>{saveError}</span>}
-          {saveSuccess && <span style={s.successText}>✓ Kaydedildi, backend yeniden başlatılıyor...</span>}
-
+          {saveInfo    && <span style={{ ...s.errorText, color: "#b45309" }}>{saveInfo}</span>}
+          {saveSuccess && <span style={s.successText}>✓ Kaydedildi ve cihaza bağlanıldı.</span>}
           <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
             <button style={s.cancelBtn} onClick={onClose} disabled={saving}>
               İptal
             </button>
             <button style={s.saveBtn} onClick={handleSave} disabled={saving}>
-              {saving ? "Kaydediliyor..." : "Kaydet ve Uygula"}
+              {saving ? "Kaydediliyor ve bağlanıyor..." : "Kaydet ve Bağlan"}
             </button>
           </div>
         </div>

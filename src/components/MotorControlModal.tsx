@@ -27,7 +27,7 @@
  *   START_CALIBRATION → { type: "START_CALIBRATION", payload: { ... } }
  *   OPEN_FULL         → { type: "OPEN_FULL", payload: {} }
  *   CLOSE_FULL        → { type: "CLOSE_FULL", payload: {} }
- *   GOTO_POSITION     → { type: "GOTO_POSITION", payload: { turns, step } }
+ *   DIGITAL_STEP      → { type: "DIGITAL_STEP", payload: { step } }
  *   SET_ADC_OFFSET    → { type: "SET_ADC_OFFSET", payload: { offset } }
  *   SET_ADC_GAIN      → { type: "SET_ADC_GAIN", payload: { gain } }
  *   STOP              → { type: "STOP", payload: {} }
@@ -59,6 +59,11 @@ type Props = {
   connectionStatus: ConnectionStatus;
   latestPacket:     SensorPayload | null;
   valveSettings:    ValveSettings;
+    // Ortak hedef — App.tsx'te tutulur, Hızlı Kontrol ile aynı değer
+  targetTicks:         number;
+  maxTicks:            number;
+  onTargetTicksChange: (ticks: number) => void;
+  onGoto:              () => void;
 };
 
 type PositionPoint = {
@@ -91,6 +96,10 @@ export function MotorControlModal({
   connectionStatus,
   latestPacket,
   valveSettings,
+  targetTicks,
+  maxTicks,
+  onTargetTicksChange,
+  onGoto,
 }: Props) {
   const connected = connectionStatus === "connected";
   const disabled  = !connected;
@@ -120,13 +129,15 @@ export function MotorControlModal({
 
   // -- State --
   const [activeMode,       setActiveMode]      = useState<ServoModeId>(3);
-  const [targetTurns,      setTargetTurns]     = useState<number>(0);
-  const [targetStep,       setTargetStep]      = useState<number>(0);
   const [calDirection,     setCalDirection]    = useState<0 | 1>(0);
   const [isConfirmingStop, setIsConfirmingStop]= useState(false);
   const [posHistory,       setPosHistory]      = useState<PositionPoint[]>([]);
   const [startTime] = useState(() => Date.now());
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+
+
+
 
   // Kalibrasyon form state'leri
   const [seatingLoad,   setSeatingLoad]   = useState<string>("");
@@ -178,18 +189,6 @@ export function MotorControlModal({
   const handleCloseFull = useCallback(() => {
     sendMessage({ type: "CLOSE_FULL", payload: {} });
   }, [sendMessage]);
-
-
-  const lastGotoRef = useRef<number>(0);
-  const handleSendTarget = useCallback(() => {
-  const now = Date.now();
-  if (now - lastGotoRef.current < 1000) return;  // 300ms debounce
-  lastGotoRef.current = now;
-  sendMessage({ 
-    type: "GOTO_POSITION", 
-    payload: { turns: targetTurns, step: targetStep } 
-  });
-}, [sendMessage, targetTurns, targetStep]);
  
 
   const handleStop = useCallback(() => {
@@ -211,22 +210,37 @@ export function MotorControlModal({
 
   const handleStartCalibration = useCallback(() => {
     const seating    = parseFloat(seatingLoad);
-    const backoff    = parseFloat(backoffOffset) || 0;
+        const backoff    = backoffOffset.trim() === "" ? 50 : (parseFloat(backoffOffset) || 50);
     const pitch      = valveSettings.thread_pitch_mm;
     const stroke     = valveSettings.max_stroke_mm;
 
-    if (!seatingLoad || isNaN(seating) || seating <= 0) {
-      alert("Seating eşiği (mA) girilmeli ve > 0 olmalı."); return;
+    if (!seatingLoad || isNaN(seating) || seating < 100 || seating > 1000) {
+      alert("Sıkışma yükü 100–1000 arasında olmalı (servo yük birimi, mA DEĞİL). Firmware varsayılanı 500.");
+      return;
+    }
+    if (seating < 300) {
+      if (!window.confirm(
+        `Sıkışma yükü ${seating} — düşük. Motor normal seyir yükünde bile bu eşiği aşıp ` +
+        `kalibrasyonu erken bitirebilir (sahte oturma). Yine de devam edilsin mi?`
+      )) return;
     }
     if (pitch <= 0 || stroke <= 0) {
       alert("Vana profili eksik. Ayarlar → Vana Profili'nden pitch ve strok girin."); return;
     }
     const totalTurns = Math.round(stroke / pitch);
-    if (totalTurns <= 0) {
-      alert("Hesaplanan total_turns <= 0. Pitch/strok değerlerini kontrol et."); return;
+    const maxTurns = Math.floor(32000 / 4096);   // = 7  (firmware Motor_Safe_Drive sınırı)
+    if (totalTurns <= 0 || totalTurns > maxTurns) {
+      alert(
+        `Hesaplanan tur sayısı ${totalTurns}. Firmware ±32000 adım sınırı yüzünden ` +
+        `en fazla ${maxTurns} tur sürülebilir.\n\n` +
+        `Ayarlar → Vana Profili'nde strok/pitch değerlerini gerçek vanaya göre düzeltin ` +
+        `(strok ${maxTurns} × pitch değerini geçmemeli).`
+      );
+      return;
     }
     const confirmed = window.confirm(
-      `Kalibrasyon vanayı kapanış yönünde seating noktasına (≈${seating} mA) sürecek.\n` +
+      `Kalibrasyon vanayı kapanış yönünde koltuğa oturana kadar sürecek.\n` +
+      `Sıkışma yükü eşiği: ${seating} (servo yük birimi, 0–1000)\n` +
       `Yön: ${calDirection === 0 ? "CW (Saat)" : "CCW (Ters)"}\n` +
       `Toplam tur (strok ${stroke} mm / pitch ${pitch} mm) = ${totalTurns}\n\nBaşlatılsın mı?`
     );
@@ -263,6 +277,11 @@ export function MotorControlModal({
   const currSteps  = latestPacket?.motor_steps      ?? "—";
   const currTorque = latestPacket?.motor_torque_pct ?? 0;
   const currSignal = latestPacket?.motor_current_ma ?? "—";
+  const isCalibrated = latestPacket?.calibration_status === 1;
+  const digitalStepDisabled = disabled || !isCalibrated;
+  const currentTicks = latestPacket?.motor_pos_ticks ?? 0;
+  const targetPct    = maxTicks > 0 ? (targetTicks * 100) / maxTicks : 0;
+  const currentPct   = maxTicks > 0 ? (currentTicks * 100) / maxTicks : 0;
 
   const torquePct   = typeof currTorque === "number" ? currTorque : 0;
   const torqueColor = torquePct > 80 ? "#ef4444" : torquePct > 60 ? "#f59e0b" : "#22c55e";
@@ -311,7 +330,7 @@ export function MotorControlModal({
             <div style={s.statusGrid}>
               <StatusCard label="Mevcut Tur"  value={String(currTurns)}  unit="tur"  accent="#007f78" />
               <StatusCard label="Mevcut Adım" value={String(currSteps)}  unit="adım" accent="#005b77" />
-              <StatusCard label="Dış Sinyal"  value={String(currSignal)} unit="mA"   accent="#6366f1" />
+              <StatusCard label="Servo Yükü"  value={String(currSignal)} unit="‰ (0–1000)" accent="#6366f1" />
               <div style={{ ...s.statusCard, borderColor: torqueColor }}>
                 <div style={s.statusLabel}>Anlık Tork</div>
                 <div style={{ ...s.statusValue, color: torqueColor }}>{torquePct.toFixed(1)}</div>
@@ -375,14 +394,15 @@ export function MotorControlModal({
                     </div>
                   </div>
                   <div style={s.fieldRow}>
-                    <span style={s.fieldLabel}>Seating (mA)</span>
+                    <span style={s.fieldLabel}>Sıkışma Yükü</span>
                     <input
                       style={s.numInput}
-                      type="number" min={1} placeholder="örn: 800"
+                      type="number" min={100} max={1000} step={10} placeholder="500"
                       value={seatingLoad}
                       onChange={e => setSeatingLoad(e.target.value)}
                       disabled={disabled}
                     />
+                    <span style={s.fieldUnit}>0–1000 (‰ tork)</span>
                   </div>
                   <div style={s.fieldRow}>
                     <span style={s.fieldLabel}>Backoff (tick)</span>
@@ -396,9 +416,10 @@ export function MotorControlModal({
                   </div>
                   {latestPacket && (
                     <div style={{ fontSize: 11, color: "#6b7280", padding: "4px 0" }}>
-                      Durum: {latestPacket.calibration_status === 1 ? "✓ Kalibre" : "Kalibre değil"} ·
+                      Durum: {latestPacket.calibration_status === 1 ? "✓ Kalibre"
+                            : latestPacket.calibration_status === 2 ? "⚠ HATA" : "Kalibre değil"} ·
                       Pozisyon: {latestPacket.motor_pos_ticks} ·
-                      Yük: {latestPacket.motor_current_ma?.toFixed(0)} mA
+                      Anlık yük: <b>{latestPacket.motor_current_ma?.toFixed(0)}</b> / eşik: {latestPacket.seating_load ?? "—"}
                     </div>
                   )}
                   <button
@@ -415,50 +436,50 @@ export function MotorControlModal({
                 <div style={s.modePanel}>
                   <div style={s.infoRow}>
                     <span style={s.infoText}>
-                      Hedef tur ve adım girerek motorun tam pozisyonunu belirle.
+                      Hedef, vananın sıfır noktasına göre mutlak ofsettir.
+                      Bu alan soldaki <b>Hızlı Kontrol</b> yüzdesiyle aynı hedefi gösterir —
+                      birini değiştirince diğeri de değişir.
                     </span>
                   </div>
                   <div style={s.fieldRow}>
-                    <span style={s.fieldLabel}>Hedef Tur</span>
+                    <span style={s.fieldLabel}>Hedef Pozisyon</span>
                     <input
                       style={s.numInput}
-                      type="number" min={0}
-                      value={targetTurns}
-                      onChange={e => setTargetTurns(Math.max(0, parseInt(e.target.value) || 0))}
+                      type="number"
+                      min={0}
+                      max={maxTicks > 0 ? maxTicks : 32767}
+                      value={targetTicks}
+                      onChange={e => onTargetTicksChange(parseInt(e.target.value) || 0)}
                       disabled={disabled}
                     />
-                    <span style={s.fieldUnit}>tur</span>
-                  </div>
-                  <div style={s.fieldRow}>
-                    <span style={s.fieldLabel}>Hedef Adım</span>
-                    <input
-                      style={s.numInput}
-                      type="number" min={0}
-                      value={targetStep}
-                      onChange={e => setTargetStep(Math.max(0, parseInt(e.target.value) || 0))}
-                      disabled={disabled}
-                    />
-                    <span style={s.fieldUnit}>adım</span>
+                    <span style={s.fieldUnit}>
+                      adım{maxTicks > 0 ? ` (0–${maxTicks})` : ""}
+                    </span>
                   </div>
                   <div style={s.targetPreview}>
                     <span style={{ color: "#6b7280" }}>Mevcut:</span>
                     <span style={{ color: "#007f78", fontWeight: 600 }}>
-                      {currTurns} tur, {currSteps} adım
+                      {currentTicks} tick · %{currentPct.toFixed(1)}
                     </span>
-                    <span style={{ color: "#6b7280" }}>→ Hedef:</span>
+                    <span style={{ color: "#6b7280" }}>Hedef:</span>
                     <span style={{ color: "#1d4ed8", fontWeight: 600 }}>
-                      {targetTurns} tur, {targetStep} adım
+                      {targetTicks} tick · %{targetPct.toFixed(1)}
                     </span>
                   </div>
+                  {!isCalibrated && (
+                    <div style={{ fontSize: 11, color: "#b45309", padding: "4px 0" }}>
+                      Dijital adım kilitli: cihaz kalibre görünmüyor.
+                    </div>
+                  )}
                   <button
-                    style={{ ...s.actionBtn, ...s.btnTeal, ...(disabled ? s.btnDisabled : {}) }}
-                    onClick={handleSendTarget}
+                    style={{ ...s.actionBtn, ...s.btnTeal, ...(digitalStepDisabled ? s.btnDisabled : {}) }}
+                    onClick={onGoto}
+                    disabled={digitalStepDisabled}
                   >
-                    ▶ Hedefe Git
+                    ▶ Pozisyona Git
                   </button>
                 </div>
               )}
-
               {/* MOD 4 — TTL AÇ/KAPAT */}
               {activeMode === 4 && (
                 <div style={s.modePanel}>
@@ -506,7 +527,7 @@ export function MotorControlModal({
               <div style={s.modePanel}>
                 {latestPacket && (
                   <div style={{ fontSize: 11, color: "#6b7280" }}>
-                    Cihazda → Ofset: {latestPacket.adc_offset?.toFixed(3) ?? "—"} bar &nbsp;|&nbsp;
+                    Cihazda → Ofset: {latestPacket.adc_offset?.toFixed(3) ?? "—"} bar  | 
                     Gain: {latestPacket.adc_gain?.toFixed(3) ?? "—"}
                   </div>
                 )}

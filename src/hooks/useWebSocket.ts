@@ -5,7 +5,7 @@
  * ve bağlantı koptuğunda otomatik yeniden bağlanan React hook'u.
  *
  * Kullanım (App.tsx içinde):
- *   const { sensorData, alarmList, connectionStatus, sendMessage } = useWebSocket();
+ *   const { sensorData, alarmList, connectionStatus, sendMessage } = useWebSocket(true);
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -16,7 +16,10 @@ import type { WsMessage, SensorPayload, AlarmPayload } from "../types";
 // ----------------------------------------------------------------
 
 // Backend adresi. Vite proxy ayarına göre değiştirilebilir.
-const WS_URL = `ws://${window.location.host}/ws`;
+const WS_URL =
+  import.meta.env.DEV
+    ? "ws://localhost:8001/ws"
+    : `ws://${window.location.host}/ws`;
 
 // Bağlantı kopunca kaç ms bekleyip yeniden bağlanılacağı.
 // Her denemede 2 katına çıkar: 1s → 2s → 4s → 8s → max 30s
@@ -43,8 +46,11 @@ export interface UseWebSocketReturn {
   /** Aktif alarm listesi. */
   alarmList: AlarmPayload[];
 
-  /** Bağlantı durumu: "connecting" | "connected" | "disconnected" */
+  /** Tarayıcı ↔ backend bağlantı durumu. */
   connectionStatus: ConnectionStatus;
+
+  /** ← YENİ (1/6) — Backend ↔ cihaz (Modbus) bağlantısı. null = henüz bilinmiyor. */
+  deviceConnected: boolean | null;
 
   /** Backend'e JSON mesaj gönderir. */
   sendMessage: (msg: object) => void;
@@ -78,6 +84,9 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
   const [alarmList,        setAlarmList]        = useState<AlarmPayload[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected");
 
+  // ← YENİ (2/6)
+  const [deviceConnected,  setDeviceConnected]  = useState<boolean | null>(null);
+
   // ----------------------------------------------------------------
   // Bağlantı Kurma
   // ----------------------------------------------------------------
@@ -96,6 +105,8 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
     setConnectionStatus("connecting");
     setSensorHistory([]);
     setSensorData(null);
+    setDeviceConnected(null);      // ← YENİ (3/6)
+
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
@@ -105,6 +116,16 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
       console.info("[WS] Bağlantı kuruldu.");
       setConnectionStatus("connected");
       reconnectDelay.current = RECONNECT_BASE_MS; // Gecikmeyi sıfırla
+
+      // ← YENİ (4/6)
+      // STATE_CHANGED yalnızca durum DEĞİŞTİĞİNDE yayınlanıyor; sonradan
+      // bağlanan istemci cihaz durumunu bilemez. Açılışta bir kez sor.
+      fetch("/api/health")
+        .then(r => r.json())
+        .then(d => {
+          if (isMounted.current && d.ok) setDeviceConnected(!!d.modbus_connected);
+        })
+        .catch(() => {});
     };
 
     // ------ Mesaj geldi ------
@@ -152,9 +173,6 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
     }, reconnectDelay.current);
   }, [connect]);
 
-
-  
-
   // ----------------------------------------------------------------
   // Mesaj İşleyici
   // ----------------------------------------------------------------
@@ -165,9 +183,10 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
       case "SENSOR_DATA": {
         const payload = msg.payload as SensorPayload;
         setSensorData(payload);
+        setDeviceConnected(true);   // ← YENİ (5/6) — veri geliyorsa cihaz ayakta
 
         // Grafik geçmişine ekle, MAX_CHART_POINTS'i aşınca en eskiyi at
-        setSensorHistory((prev) => 
+        setSensorHistory((prev) =>
           prev.length >= MAX_CHART_POINTS
             ? [...prev.slice(1), payload]   // en eskiyi at, yeniyi sona ekle
             : [...prev, payload]);
@@ -183,6 +202,11 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
       }
 
       case "STATE_CHANGED": {
+        // ← YENİ (6/6) — backend reload_hardware() sonrası modbus_connected yolluyor
+        const p = msg.payload as { state?: string; modbus_connected?: boolean };
+        if (typeof p.modbus_connected === "boolean") {
+          setDeviceConnected(p.modbus_connected);
+        }
         console.info("[WS] Sistem durumu değişti:", msg.payload);
         break;
       }
@@ -214,7 +238,7 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
         wsRef.current.close();
       }
     };
-  }, [connect]);
+  }, [connect]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ----------------------------------------------------------------
   // Dışa Açık Fonksiyonlar
@@ -228,7 +252,7 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
     }
   }, []);
 
-  const clearAlarms = useCallback(() => setAlarmList([]), []);
+  const clearAlarms  = useCallback(() => setAlarmList([]), []);
   const clearHistory = useCallback(() => setSensorHistory([]), []);
 
   const disconnect = useCallback(() => {
@@ -247,11 +271,11 @@ export function useWebSocket(autoConnect = false): UseWebSocketReturn {
     sensorHistory,
     alarmList,
     connectionStatus,
+    deviceConnected,     // ← YENİ (return'e eklendi)
     clearHistory,
     sendMessage,
     clearAlarms,
     connect,
     disconnect,
-    
   };
 }

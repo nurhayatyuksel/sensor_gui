@@ -31,6 +31,22 @@ export const limitParameters: ParameterItem[] = [
 ];
 
 
+export const fuzzyParameters: ParameterItem[] = [
+  { label: "Hata Ölçeği (bar)", key: "fuzzyErrScale" },
+  { label: "dHata Ölçeği (bar/s)", key: "fuzzyDerrScale" },
+  { label: "Kp Derinliği (%)", key: "fuzzyKpSpan" },
+  { label: "Ki Derinliği (%)", key: "fuzzyKiSpan" },
+  { label: "Kd Derinliği (%)", key: "fuzzyKdSpan" },
+];
+
+export const adaptParameters: ParameterItem[] = [
+  { label: "Öğrenme Hızı", key: "adaptRate" },
+  { label: "Ölçek Min (%)", key: "adaptGainMin" },
+  { label: "Ölçek Max (%)", key: "adaptGainMax" },
+  { label: "Pencere (ms)", key: "adaptWindowMs" },
+  { label: "Salınım Eşiği", key: "adaptOscLimit" },
+];
+
 
 export const fluidOptions: FluidOption[] = [
   { id: "hava_ideal", label: "Hava (İdeal Gaz)" },
